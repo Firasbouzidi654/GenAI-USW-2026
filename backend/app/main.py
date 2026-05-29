@@ -1,9 +1,24 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import prompt, upload
+from app.core.database import Base, engine
+import app.models  # noqa: F401 — registers models with Base
 
-app = FastAPI(title="KI-Lern- & Jobagent API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:
+        pass  # PostgreSQL nicht verfügbar, Tabellen werden später erstellt
+    yield
+
+
+app = FastAPI(title="KI-Lern- & Jobagent API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,8 +30,7 @@ app.add_middleware(
 app.include_router(prompt.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-

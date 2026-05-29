@@ -31,3 +31,27 @@ def test_prompt_includes_context_when_available(client):
 def test_prompt_missing_field_returns_422(client):
     response = client.post("/api/prompt", json={})
     assert response.status_code == 422
+
+
+def test_prompt_gemini_error_returns_502(client):
+    with patch("app.api.v1.prompt.client.models.generate_content", side_effect=Exception("Gemini down")), \
+         patch("app.api.v1.prompt.retrieve_context", new_callable=AsyncMock, return_value=""):
+        response = client.post("/api/prompt", json={"prompt": "Was ist SQL?"})
+    assert response.status_code == 502
+
+
+async def async_chunk_generator(*texts):
+    for text in texts:
+        yield MagicMock(text=text)
+
+
+def test_stream_prompt_returns_event_stream(client):
+    with patch("app.api.v1.prompt.client.aio.models.generate_content_stream",
+               new=lambda *a, **kw: async_chunk_generator("Hallo ", "Welt")), \
+         patch("app.api.v1.prompt.retrieve_context", new_callable=AsyncMock, return_value=""):
+        response = client.post("/api/prompt/stream", json={"prompt": "Test"})
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    assert "data: Hallo " in response.text
+    assert "data: Welt" in response.text
+    assert "data: [DONE]" in response.text

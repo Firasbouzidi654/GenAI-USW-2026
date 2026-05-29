@@ -151,6 +151,7 @@ textarea {
   border: 1px solid #d1d5db;
   padding: 8px;
   background: white;
+  color: #111827;
 }
 
 button {

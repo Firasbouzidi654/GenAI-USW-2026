@@ -14,11 +14,14 @@
       <div class="box">
         <h3>💬 Prompt</h3>
         <textarea v-model="prompt" placeholder="Frage eingeben..."></textarea>
-        <button @click="sendPrompt">Senden</button>
+        <button @click="sendPrompt" :disabled="loading">
+          {{ loading ? 'Lädt...' : 'Senden' }}
+        </button>
 
-        <p v-if="response" class="response">
-          {{ response }}
-        </p>
+        <div v-if="response || loading" class="response-box">
+          <p class="response-label">Antwort</p>
+          <p class="response-text">{{ response }}<span v-if="loading" class="cursor">▋</span></p>
+        </div>
       </div>
 
     </div>
@@ -83,21 +86,40 @@ export default {
   data() {
     return {
       prompt: "",
-      response: ""
+      response: "",
+      loading: false
     }
   },
   methods: {
     async sendPrompt() {
+      this.loading = true
+      this.response = ''
       try {
-        const res = await fetch('/api/prompt', {
+        const res = await fetch('/api/prompt/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt: this.prompt })
         })
-        const data = await res.json()
-        this.response = data.response
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop()
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            const data = line.slice(6)
+            if (data === '[DONE]' || data === '[ERROR]') return
+            this.response += data
+          }
+        }
       } catch (e) {
         this.response = 'Fehler: Backend nicht erreichbar.'
+      } finally {
+        this.loading = false
       }
     }
   }
@@ -165,10 +187,36 @@ button {
   cursor: pointer;
 }
 
-.response {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #374151;
+.response-box {
+  margin-top: 12px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.response-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0369a1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.response-text {
+  font-size: 13px;
+  color: #1e3a5f;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.cursor {
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
 }
 
 /* MAIN */

@@ -47,7 +47,7 @@ async def async_chunk_generator(*texts):
 
 def test_stream_prompt_returns_event_stream(client):
     with patch("app.api.v1.prompt.client.aio.models.generate_content_stream",
-               new=lambda *a, **kw: async_chunk_generator("Hallo ", "Welt")), \
+               new=AsyncMock(return_value=async_chunk_generator("Hallo ", "Welt"))), \
          patch("app.api.v1.prompt.retrieve_context", new_callable=AsyncMock, return_value=""):
         response = client.post("/api/prompt/stream", json={"prompt": "Test"})
     assert response.status_code == 200

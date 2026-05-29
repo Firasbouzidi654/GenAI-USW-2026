@@ -149,6 +149,7 @@ Frontend ist dann erreichbar unter: **http://localhost:5173**
 | `POST` | `/api/prompt` | Prompt an Gemini senden, Antwort erhalten |
 | `POST` | `/api/prompt/stream` | Prompt streamen (Server-Sent Events) |
 | `POST` | `/api/upload` | PDF hochladen und RAG-Pipeline anstoßen |
+| `GET` | `/api/history` | Letzte 50 Chat-Nachrichten aus der Datenbank abrufen |
 
 ### POST `/api/prompt`
 
@@ -162,7 +163,7 @@ Response:
 { "response": "Eine JOIN-Operation verbindet..." }
 ```
 
-Fehlercodes: `422` bei fehlendem Feld, `502` wenn Gemini nicht erreichbar ist.
+Fehlercodes: `422` bei fehlendem Feld, `502` wenn Gemini nicht erreichbar ist oder das API-Kontingent erschöpft ist (429 von Gemini).
 
 ### POST `/api/prompt/stream`
 

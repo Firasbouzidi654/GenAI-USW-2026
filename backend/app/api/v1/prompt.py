@@ -54,9 +54,10 @@ async def stream_prompt(body: PromptRequest):
 
     async def generate():
         try:
-            async for chunk in client.aio.models.generate_content_stream(
+            stream = await client.aio.models.generate_content_stream(
                 model="gemini-2.5-flash", contents=full_prompt
-            ):
+            )
+            async for chunk in stream:
                 if chunk.text:
                     yield f"data: {chunk.text}\n\n"
         except Exception:

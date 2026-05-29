@@ -1,104 +1,168 @@
 <template>
-  <div class="layout">
+  <div :class="['app', { dark: isDark }]" @click="closePanel">
 
-    <!-- SIDEBAR -->
-    <div class="sidebar">
-
-      <h2>AI Agent</h2>
-
-      <div class="box">
-        <h3>📄 PDF Upload</h3>
-        <input type="file" />
+    <!-- NAV BAR -->
+    <nav class="navbar" @click.stop>
+      <span class="nav-logo">✦ AI Agent</span>
+      <div class="nav-items">
+        <div v-for="item in navItems" :key="item.id" class="nav-item">
+          <button
+            @click="togglePanel(item.id)"
+            :class="['nav-btn', { active: activePanel === item.id }]"
+          >
+            {{ item.icon }} {{ item.label }}
+          </button>
+          <div v-if="activePanel === item.id" class="dropdown">
+            <h4 class="dropdown-title">{{ item.label }}</h4>
+            <ul>
+              <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
+            </ul>
+          </div>
+        </div>
       </div>
+      <button class="theme-btn" @click.stop="toggleDark" :title="isDark ? 'Light Mode' : 'Dark Mode'">
+        {{ isDark ? '☀️' : '🌙' }}
+      </button>
+    </nav>
 
-      <div class="box">
-        <h3>💬 Prompt</h3>
-        <textarea v-model="prompt" placeholder="Frage eingeben..."></textarea>
-        <button @click="sendPrompt" :disabled="loading">
-          {{ loading ? 'Lädt...' : 'Senden' }}
+    <!-- CHAT AREA -->
+    <main class="chat-area" ref="chatArea">
+      <div class="messages">
+
+        <div v-if="messages.length === 0" class="welcome">
+          <div class="welcome-icon">✦</div>
+          <h2>Wie kann ich dir helfen?</h2>
+          <p>Stelle eine Frage oder lade ein Dokument hoch.</p>
+        </div>
+
+        <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
+          <div class="bubble">
+            <div
+              v-if="msg.role === 'assistant'"
+              class="bubble-text markdown"
+              v-html="renderMarkdown(msg.content)"
+            ></div>
+            <span v-else class="bubble-text">{{ msg.content }}</span>
+            <span v-if="msg.role === 'assistant' && loading && i === messages.length - 1 && !msg.content" class="cursor">▋</span>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+    <!-- INPUT BAR -->
+    <div class="input-bar">
+      <div class="input-container">
+        <label class="upload-btn" title="PDF hochladen">
+          📎
+          <input type="file" accept=".pdf" @change="uploadFile" hidden />
+        </label>
+        <textarea
+          v-model="prompt"
+          placeholder="Frage eingeben..."
+          @keydown.enter.exact.prevent="sendPrompt"
+          @input="resizeTextarea"
+          ref="textarea"
+          rows="1"
+        ></textarea>
+        <button @click="sendPrompt" :disabled="loading || !prompt.trim()" class="send-btn">
+          ↑
         </button>
-
-        <div v-if="response || loading" class="response-box">
-          <p class="response-label">Antwort</p>
-          <p class="response-text">{{ response }}<span v-if="loading" class="cursor">▋</span></p>
-        </div>
       </div>
-
-    </div>
-
-    <!-- MAIN -->
-    <div class="main">
-
-      <h1>Study & Career Dashboard</h1>
-
-      <p class="subtitle">
-        Adaptive Learning · AI Tutor · Career Matching
-      </p>
-
-      <!-- extra spacing -->
-      <div class="spacer"></div>
-
-      <div class="grid">
-
-        <div class="card c1">
-          <h2>Prüfungen</h2>
-          <ul>
-            <li>15.06 Datenbanken</li>
-            <li>22.06 Statistik</li>
-            <li>01.07 Programmierung</li>
-          </ul>
-        </div>
-
-        <div class="card c2">
-          <h2>Lernplan</h2>
-          <ul>
-            <li>SQL Basics</li>
-            <li>JOINs üben</li>
-            <li>Statistik wiederholen</li>
-          </ul>
-        </div>
-
-        <div class="card c3">
-          <h2>Quiz</h2>
-          <ul>
-            <li>SQL 5 Fragen</li>
-            <li>Statistik Aufgaben</li>
-          </ul>
-        </div>
-
-        <div class="card c4">
-          <h2>Career / Skills</h2>
-          <p>SQL: ⭐⭐☆☆☆</p>
-          <p>Python: ⭐⭐⭐☆☆</p>
-          <p>Power BI: ⭐☆☆☆☆</p>
-          <p><b>Job Fit: 62%</b></p>
-        </div>
-
-      </div>
-
+      <p v-if="uploadStatus" class="upload-status">{{ uploadStatus }}</p>
     </div>
 
   </div>
 </template>
 
 <script>
+import { marked } from 'marked'
+
+marked.setOptions({ breaks: true })
+
 export default {
   data() {
     return {
-      prompt: "",
-      response: "",
-      loading: false
+      prompt: '',
+      messages: [],
+      loading: false,
+      activePanel: null,
+      uploadStatus: '',
+      isDark: false,
+      navItems: [
+        {
+          id: 'pruefungen',
+          label: 'Prüfungen',
+          icon: '📅',
+          entries: ['15.06 Datenbanken', '22.06 Statistik', '01.07 Programmierung']
+        },
+        {
+          id: 'lernplan',
+          label: 'Lernplan',
+          icon: '📚',
+          entries: ['SQL Basics', 'JOINs üben', 'Statistik wiederholen']
+        },
+        {
+          id: 'quiz',
+          label: 'Quiz',
+          icon: '🧠',
+          entries: ['SQL – 5 Fragen', 'Statistik Aufgaben']
+        },
+        {
+          id: 'career',
+          label: 'Career',
+          icon: '💼',
+          entries: ['SQL: ⭐⭐☆☆☆', 'Python: ⭐⭐⭐☆☆', 'Power BI: ⭐☆☆☆☆', 'Job Fit: 62%']
+        }
+      ]
     }
   },
+  mounted() {
+    this.isDark = localStorage.getItem('darkMode') === 'true'
+  },
   methods: {
+    toggleDark() {
+      this.isDark = !this.isDark
+      localStorage.setItem('darkMode', this.isDark)
+    },
+    togglePanel(id) {
+      this.activePanel = this.activePanel === id ? null : id
+    },
+    closePanel() {
+      this.activePanel = null
+    },
+    renderMarkdown(text) {
+      if (!text) return ''
+      return marked.parse(text)
+    },
+    resizeTextarea() {
+      const el = this.$refs.textarea
+      el.style.height = 'auto'
+      el.style.height = Math.min(el.scrollHeight, 140) + 'px'
+    },
+    scrollToBottom() {
+      const el = this.$refs.chatArea
+      if (el) el.scrollTop = el.scrollHeight
+    },
     async sendPrompt() {
+      if (!this.prompt.trim() || this.loading) return
+
+      const userPrompt = this.prompt
+      this.prompt = ''
+      this.$nextTick(() => { this.$refs.textarea.style.height = 'auto' })
+
+      this.messages.push({ role: 'user', content: userPrompt })
+      this.messages.push({ role: 'assistant', content: '' })
       this.loading = true
-      this.response = ''
+
+      await this.$nextTick()
+      this.scrollToBottom()
+
       try {
         const res = await fetch('/api/prompt/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: this.prompt })
+          body: JSON.stringify({ prompt: userPrompt })
         })
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -113,157 +177,390 @@ export default {
             if (!line.startsWith('data: ')) continue
             const data = line.slice(6)
             if (data === '[DONE]' || data === '[ERROR]') return
-            this.response += data
+            this.messages[this.messages.length - 1].content += data
+            this.$nextTick(() => this.scrollToBottom())
           }
         }
       } catch (e) {
-        this.response = 'Fehler: Backend nicht erreichbar.'
+        this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
       } finally {
         this.loading = false
       }
+    },
+    async uploadFile(event) {
+      const file = event.target.files[0]
+      if (!file) return
+      this.uploadStatus = `"${file.name}" wird hochgeladen...`
+      const formData = new FormData()
+      formData.append('file', file)
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData })
+        if (res.ok) {
+          this.uploadStatus = ''
+          this.messages.push({ role: 'assistant', content: `📄 **"${file.name}"** wurde hochgeladen und wird verarbeitet.` })
+          this.$nextTick(() => this.scrollToBottom())
+        } else {
+          this.uploadStatus = 'Fehler beim Hochladen.'
+        }
+      } catch (e) {
+        this.uploadStatus = 'Fehler: Backend nicht erreichbar.'
+      }
+      event.target.value = ''
     }
   }
 }
 </script>
 
 <style>
-/* GLOBAL */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* CSS VARIABLES */
+:root {
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --surface-hover: #f3f4f6;
+  --border: #e5e7eb;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --primary: #6366f1;
+  --primary-hover: #4f46e5;
+  --primary-dim: #ede9fe;
+  --user-bubble-bg: #6366f1;
+  --user-bubble-text: #ffffff;
+  --assistant-bubble-bg: #ffffff;
+  --assistant-bubble-text: #111827;
+  --code-bg: #f3f4f6;
+  --code-text: #be185d;
+  --input-bg: #ffffff;
+  --shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+
+.dark {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-hover: #22263a;
+  --border: #2e3247;
+  --text: #f1f3f9;
+  --text-muted: #8b92a9;
+  --primary: #818cf8;
+  --primary-hover: #6366f1;
+  --primary-dim: #1e1b4b;
+  --user-bubble-bg: #4f46e5;
+  --user-bubble-text: #ffffff;
+  --assistant-bubble-bg: #1a1d27;
+  --assistant-bubble-text: #f1f3f9;
+  --code-bg: #0f1117;
+  --code-text: #f472b6;
+  --input-bg: #1a1d27;
+  --shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+
 body {
   margin: 0;
-  font-family: Arial, sans-serif;
-  background: #f5f6f8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-/* LAYOUT */
-.layout {
-  display: flex;
-  height: 100vh;
-}
-
-/* SIDEBAR (hellgrau wie gewünscht) */
-.sidebar {
-  width: 300px;
-  background: #e5e7eb;
-  padding: 20px;
+.app {
   display: flex;
   flex-direction: column;
-  gap: 15px;
-  border-right: 1px solid #d1d5db;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  transition: background 0.2s, color 0.2s;
 }
 
-.sidebar h2 {
-  margin-bottom: 10px;
-  color: #111827;
+/* NAV */
+.navbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 100;
 }
 
-.box {
-  background: #f9fafb;
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px solid #e5e7eb;
-
-
+.nav-logo {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--primary);
+  margin-right: 12px;
+  white-space: nowrap;
 }
 
-textarea {
-  width: 100%;
-  height: 80px;
-  margin-top: 5px;
+.nav-items {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+}
+
+.nav-item { position: relative; }
+
+.nav-btn {
+  background: none;
+  border: none;
+  padding: 5px 11px;
   border-radius: 6px;
-  border: 1px solid #d1d5db;
-  padding: 8px;
-  background: white;
-  color: #111827;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
 }
 
-button {
-  margin-top: 10px;
+.nav-btn:hover { background: var(--surface-hover); color: var(--text); }
+.nav-btn.active { background: var(--primary-dim); color: var(--primary); }
+
+.theme-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.theme-btn:hover { background: var(--surface-hover); }
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  min-width: 200px;
+  box-shadow: var(--shadow);
+  z-index: 200;
+}
+
+.dropdown-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dropdown ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dropdown ul li {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.dropdown ul li:last-child { border-bottom: none; }
+
+/* CHAT */
+.chat-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px 24px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.messages {
+  max-width: 720px;
   width: 100%;
-  padding: 8px;
-  background: #6366f1;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+}
+
+.welcome {
+  text-align: center;
+  margin: auto;
+  color: var(--text-muted);
+}
+
+.welcome-icon {
+  font-size: 36px;
+  color: var(--primary);
+  margin-bottom: 12px;
+}
+
+.welcome h2 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.welcome p { margin: 0; font-size: 14px; }
+
+.message { display: flex; }
+.message.user { justify-content: flex-end; }
+.message.assistant { justify-content: flex-start; }
+
+.bubble {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+.message.user .bubble {
+  background: var(--user-bubble-bg);
+  color: var(--user-bubble-text);
+  border-bottom-right-radius: 4px;
+}
+
+.message.assistant .bubble {
+  background: var(--assistant-bubble-bg);
+  color: var(--assistant-bubble-text);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+  box-shadow: var(--shadow);
+}
+
+/* MARKDOWN STYLES */
+.markdown { white-space: normal; }
+.markdown p { margin: 0 0 8px; }
+.markdown p:last-child { margin-bottom: 0; }
+.markdown strong { font-weight: 600; }
+.markdown em { font-style: italic; }
+.markdown code {
+  font-family: 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12.5px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.markdown pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.markdown pre code {
+  background: none;
+  color: var(--text);
+  padding: 0;
+  font-size: 12.5px;
+}
+.markdown ul, .markdown ol {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+.markdown li { margin: 2px 0; }
+.markdown h1, .markdown h2, .markdown h3 {
+  margin: 10px 0 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+.markdown h1 { font-size: 17px; }
+.markdown h2 { font-size: 15px; }
+.markdown h3 { font-size: 14px; }
+.markdown blockquote {
+  border-left: 3px solid var(--primary);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--text-muted);
+}
+.markdown a { color: var(--primary); text-decoration: underline; }
+
+.cursor { animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* INPUT BAR */
+.input-bar {
+  padding: 10px 24px 18px;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.input-container {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 8px 8px 8px 12px;
+  box-shadow: var(--shadow);
+  transition: border-color 0.2s;
+}
+
+.input-container:focus-within { border-color: var(--primary); }
+
+.upload-btn {
+  cursor: pointer;
+  font-size: 18px;
+  padding: 5px;
+  border-radius: 7px;
+  color: var(--text-muted);
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.upload-btn:hover { color: var(--primary); background: var(--surface-hover); }
+
+.input-container textarea {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+  background: transparent;
+  line-height: 1.5;
+  padding: 4px 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.input-container textarea::placeholder { color: var(--text-muted); }
+
+.send-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--primary);
   color: white;
   border: none;
-  border-radius: 6px;
+  font-size: 18px;
   cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  padding: 0;
 }
 
-.response-box {
-  margin-top: 12px;
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  border-radius: 8px;
-  padding: 10px 12px;
-}
+.send-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.send-btn:disabled { background: var(--border); cursor: default; }
 
-.response-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #0369a1;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 6px;
-}
-
-.response-text {
-  font-size: 13px;
-  color: #1e3a5f;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.cursor {
-  animation: blink 1s step-end infinite;
-}
-
-@keyframes blink {
-  50% { opacity: 0; }
-}
-
-/* MAIN */
-.main {
-  flex: 1;
-  padding: 40px;
-}
-
-/* HEADER */
-h1 {
-  margin: 0;
-  color: #111827;
-}
-
-/* Abstand zwischen Titel und Kacheln */
-.subtitle {
-  margin-top: 20px;
-  color: #6b7280;
-}
-
-.spacer {
-  height: 35px;
-}
-
-/* GRID */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 18px;
-}
-
-/* CARDS (sehr hell & clean) */
-.card {
-  padding: 18px;
-  border-radius: 12px;
-  border: 1px solid #e5e7eb;
-  background: #ffffff;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-}
-
-/* leicht unterschiedliche Pastell-Töne */
-.c1 { background: #fef3c7; }
-.c2 { background: #dbeafe; }
-.c3 { background: #dcfce7; }
-.c4 { background: #f3e8ff; }
-
-ul {
-  padding-left: 18px;
+.upload-status {
+  max-width: 720px;
+  margin: 6px auto 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
 }
 </style>

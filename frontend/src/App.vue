@@ -87,8 +87,18 @@ export default {
     }
   },
   methods: {
-    sendPrompt() {
-      this.response = "Mock AI Antwort: " + this.prompt
+    async sendPrompt() {
+      try {
+        const res = await fetch('/api/prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: this.prompt })
+        })
+        const data = await res.json()
+        this.response = data.response
+      } catch (e) {
+        this.response = 'Fehler: Backend nicht erreichbar.'
+      }
     }
   }
 }

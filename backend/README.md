@@ -9,7 +9,7 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 | Komponente | Technologie |
 |---|---|
 | API Framework | FastAPI |
-| LLM | Google Gemini (`gemini-2.5-flash`) |
+| LLM | Google Gemini (`gemini-3.1-flash-lite-preview`) |
 | Datenbank (relational) | PostgreSQL 16 |
 | Vektordatenbank | ChromaDB |
 | Agenten-Framework | LangGraph |

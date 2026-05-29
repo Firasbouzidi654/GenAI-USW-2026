@@ -34,7 +34,7 @@ async def handle_prompt(body: PromptRequest, db: AsyncSession = Depends(get_db))
     full_prompt = _build_prompt(body.prompt, context)
 
     try:
-        result = client.models.generate_content(model="gemini-2.5-flash", contents=full_prompt)
+        result = client.models.generate_content(model="gemini-3.1-flash-lite-preview", contents=full_prompt)
     except Exception:
         raise HTTPException(status_code=502, detail="KI-Dienst nicht erreichbar.")
 
@@ -55,7 +55,7 @@ async def stream_prompt(body: PromptRequest):
     async def generate():
         try:
             stream = await client.aio.models.generate_content_stream(
-                model="gemini-2.5-flash", contents=full_prompt
+                model="gemini-3.1-flash-lite-preview", contents=full_prompt
             )
             async for chunk in stream:
                 if chunk.text:

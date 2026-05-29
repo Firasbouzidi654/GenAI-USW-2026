@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     postgres_url: str
     chroma_host: str = "localhost"
     chroma_port: int = 8000
+    chroma_collection: str = "documents"
+    embedding_model: str = "text-embedding-004"
+    rag_chunk_size: int = 1000
+    rag_chunk_overlap: int = 150
+    rag_top_k: int = 4
 
 
 settings = Settings()

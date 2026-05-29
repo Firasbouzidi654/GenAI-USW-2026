@@ -1,12 +1,11 @@
-import google.generativeai as genai
 from fastapi import APIRouter
+from google import genai
 from pydantic import BaseModel
 
 from app.core.config import settings
 from app.rag.retriever import retrieve_context
 
-genai.configure(api_key=settings.gemini_api_key)
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=settings.gemini_api_key)
 
 router = APIRouter()
 
@@ -28,5 +27,5 @@ async def handle_prompt(body: PromptRequest):
     else:
         full_prompt = body.prompt
 
-    result = model.generate_content(full_prompt)
+    result = client.models.generate_content(model="gemini-1.5-flash", contents=full_prompt)
     return PromptResponse(response=result.text)

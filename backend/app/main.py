@@ -18,3 +18,4 @@ app.include_router(upload.router, prefix="/api")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+

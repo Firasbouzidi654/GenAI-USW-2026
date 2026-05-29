@@ -9,10 +9,11 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 | Komponente | Technologie |
 |---|---|
 | API Framework | FastAPI |
+| LLM | Google Gemini (`gemini-1.5-flash`) |
 | Datenbank (relational) | PostgreSQL 16 |
 | Vektordatenbank | ChromaDB |
 | Agenten-Framework | LangGraph |
-| RAG / Embeddings | LangChain + OpenAI |
+| RAG / Embeddings | LangChain |
 | Containerisierung | Docker |
 
 ---
@@ -22,14 +23,14 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 ```
 backend/
 ├── app/
-│   ├── main.py               # FastAPI Entry Point
+│   ├── main.py               # FastAPI Entry Point, Router-Registrierung
 │   ├── core/
 │   │   ├── config.py         # Einstellungen & Umgebungsvariablen
 │   │   └── database.py       # DB-Verbindungen (PostgreSQL & Chroma)
 │   ├── api/
 │   │   └── v1/
-│   │       ├── learning.py   # Endpunkte: /learning/*
-│   │       └── jobs.py       # Endpunkte: /jobs/*
+│   │       ├── prompt.py     # POST /api/prompt
+│   │       └── upload.py     # POST /api/upload
 │   ├── agents/
 │   │   ├── tutor_agent.py    # LangGraph Tutor-Agent (Modul A)
 │   │   └── job_agent.py      # Job-Matching & Anschreiben (Modul B)
@@ -38,24 +39,22 @@ backend/
 │   │   ├── job_portal_gateway.py   # LinkedIn, StepStone, Indeed
 │   │   └── file_bridge.py          # PDF Parsing & Verwaltung
 │   └── rag/
-│       ├── pipeline.py       # Chunking & Embedding-Generierung
-│       └── retriever.py      # Vektor-Suche & Kontext-Abruf
+│       ├── pipeline.py       # Stub: Chunking & Embedding (→ Laszlo)
+│       └── retriever.py      # Stub: Vektor-Suche & Kontext-Abruf (→ Laszlo)
+├── uploads/                  # Hochgeladene PDFs (wird automatisch erstellt)
 ├── tests/
 ├── .env                      # Eure lokalen API-Keys (nicht ins Git!)
 ├── .env.example              # Vorlage für .env
-├── docker-compose.yml        # PostgreSQL & ChromaDB Container
-└── pyproject.toml
+└── docker-compose.yml        # PostgreSQL & ChromaDB Container
 ```
 
 ---
 
 ## Voraussetzungen
 
-Stellt sicher, dass folgendes auf eurem Rechner installiert ist:
-
-- **Python 3.11+** – [python.org](https://www.python.org/downloads/)
-- **Docker Desktop** – [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) (muss im Hintergrund laufen)
-- **Git**
+- **Python 3.11+**
+- **Node.js 18+** (für das Frontend)
+- **Docker Desktop** (muss im Hintergrund laufen)
 
 ---
 
@@ -71,13 +70,12 @@ cd <repo-ordner>
 ### 2. Virtuelle Python-Umgebung erstellen & aktivieren
 
 ```bash
-# Umgebung erstellen
 python3 -m venv .venv
 
-# Aktivieren (macOS/Linux)
+# macOS/Linux
 source .venv/bin/activate
 
-# Aktivieren (Windows)
+# Windows
 .venv\Scripts\activate
 ```
 
@@ -85,23 +83,21 @@ source .venv/bin/activate
 
 ```bash
 pip install fastapi uvicorn pydantic-settings asyncpg \
-            sqlalchemy chromadb langchain langchain-openai \
+            sqlalchemy chromadb langchain \
+            google-generativeai \
             python-multipart python-dotenv
 ```
 
 ### 4. Umgebungsvariablen einrichten
 
-Kopiert die Vorlage und tragt eure API-Keys ein:
-
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-Dann `.env` öffnen und ausfüllen:
+Dann `backend/.env` öffnen und ausfüllen:
 
 ```
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=AIza...
 POSTGRES_URL=postgresql+asyncpg://agent_user:agent_pass@localhost:5432/agent_db
 CHROMA_HOST=localhost
 CHROMA_PORT=8000
@@ -116,29 +112,78 @@ cd backend
 docker compose up -d
 ```
 
-Das startet PostgreSQL (Port 5432) und ChromaDB (Port 8000) als Hintergrundprozesse.
+Startet PostgreSQL (Port 5432) und ChromaDB (Port 8000) als Hintergrundprozesse.
 
 ### 6. Backend starten
 
+ChromaDB belegt Port 8000, daher läuft das Backend auf Port **8080**:
+
 ```bash
 cd backend
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8080
+```
+
+### 7. Frontend starten
+
+```bash
+cd frontend
+npm install   # nur beim ersten Mal
+npm run dev
+```
+
+Frontend ist dann erreichbar unter: **http://localhost:5173**
+
+---
+
+## API-Endpunkte
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `GET` | `/health` | Statuscheck |
+| `GET` | `/docs` | Interaktive API-Dokumentation (Swagger UI) |
+| `POST` | `/api/prompt` | Prompt an Gemini senden, Antwort erhalten |
+| `POST` | `/api/upload` | PDF hochladen und RAG-Pipeline anstoßen |
+
+### POST `/api/prompt`
+
+```json
+// Request
+{ "prompt": "Was ist eine SQL JOIN-Operation?" }
+
+// Response
+{ "response": "Eine JOIN-Operation verbindet..." }
+```
+
+### POST `/api/upload`
+
+Multipart-Form mit einem Feld `file` (PDF).
+
+```bash
+curl -X POST http://localhost:8080/api/upload \
+     -F "file=@skript.pdf"
+```
+
+```json
+// Response
+{ "status": "ok", "filename": "skript.pdf" }
 ```
 
 ---
 
-## Testen ob alles läuft
+## RAG-Pipeline (Laszlo)
 
-| URL                          | Erwartetes Ergebnis |
-|------------------------------|---|
-| http://127.0.0.1:8080/health | `{"status": "ok"}` |
-| http://127.0.0.1:8080/docs   | Interaktive API-Dokumentation |
+Die Endpunkte rufen zwei Stubs auf, die noch implementiert werden müssen:
+
+| Datei | Funktion | Aufgabe |
+|---|---|---|
+| `app/rag/pipeline.py` | `process_document(file_path)` | PDF parsen, chunken, embedden, in ChromaDB speichern |
+| `app/rag/retriever.py` | `retrieve_context(query)` | Query embedden, ChromaDB durchsuchen, Kontext als String zurückgeben |
+
+Sobald diese beiden Funktionen implementiert sind, nutzen `/api/prompt` und `/api/upload` sie automatisch.
 
 ---
 
 ## Architektur-Überblick
-
-Das Backend besteht aus drei Hauptbereichen:
 
 **Modul A – Adaptiver Lernagent**
 Verarbeitet hochgeladene Vorlesungs-PDFs über eine RAG-Pipeline (Chunking → Embeddings → ChromaDB). Der LangGraph-Tutor-Agent generiert dynamisch Quizzes und schaltet bei schlechter Performance automatisch auf alternative Lernressourcen um.
@@ -148,6 +193,3 @@ Vergleicht Lebenslauf-Vektoren semantisch mit Stellenanzeigen und generiert indi
 
 **MCP-Server-Infrastruktur**
 Drei spezialisierte Server kapseln externe Schnittstellen: HTW-Systeme (Noten, Prüfungstermine), Job-Portale (LinkedIn, StepStone) und das lokale Dateisystem.
-
----
-

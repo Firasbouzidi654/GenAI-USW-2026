@@ -49,6 +49,7 @@ async def retrieve_context(query: str) -> str:
         result = collection.query(
             query_embeddings=embeddings,
             n_results=settings.rag_top_k,
+            include=["documents", "metadatas", "distances"],
         )
     except Exception as exc:
         logger.warning("Chroma-Query fehlgeschlagen: %s", exc)
@@ -56,9 +57,21 @@ async def retrieve_context(query: str) -> str:
 
     documents_batches = result.get("documents") or []
     metadatas_batches = result.get("metadatas") or []
+    distances_batches = result.get("distances") or []
     if not documents_batches or not documents_batches[0]:
         return ""
 
     documents = documents_batches[0]
     metadatas = metadatas_batches[0] if metadatas_batches else []
-    return _format_context(documents, metadatas)
+    distances = distances_batches[0] if distances_batches else []
+
+    # Cosine distance: 0 = identical, ~0.46 = unrelated in practice.
+    # Only include chunks that are actually relevant to the query.
+    threshold = 0.4
+    if distances:
+        filtered = [(d, m) for d, m, dist in zip(documents, metadatas, distances) if dist < threshold]
+        if not filtered:
+            return ""
+        documents, metadatas = zip(*filtered)
+
+    return _format_context(list(documents), list(metadatas))

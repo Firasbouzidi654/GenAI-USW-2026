@@ -52,6 +52,6 @@ def test_stream_prompt_returns_event_stream(client):
         response = client.post("/api/prompt/stream", json={"prompt": "Test"})
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
-    assert "data: Hallo " in response.text
-    assert "data: Welt" in response.text
+    assert 'data: "Hallo "' in response.text
+    assert 'data: "Welt"' in response.text
     assert "data: [DONE]" in response.text

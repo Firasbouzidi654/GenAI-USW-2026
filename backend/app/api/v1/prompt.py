@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from google import genai
@@ -59,7 +61,7 @@ async def stream_prompt(body: PromptRequest):
             )
             async for chunk in stream:
                 if chunk.text:
-                    yield f"data: {chunk.text}\n\n"
+                    yield f"data: {json.dumps(chunk.text)}\n\n"
         except Exception:
             yield "data: [ERROR]\n\n"
         yield "data: [DONE]\n\n"

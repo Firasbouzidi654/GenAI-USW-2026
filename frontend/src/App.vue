@@ -37,13 +37,14 @@
 
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
           <div class="bubble">
-            <div
-              v-if="msg.role === 'assistant'"
-              class="bubble-text markdown"
-              v-html="renderMarkdown(msg.content)"
-            ></div>
+            <template v-if="msg.role === 'assistant'">
+              <div v-if="!loading || i < messages.length - 1"
+                   class="bubble-text markdown"
+                   v-html="renderMarkdown(msg.content)">
+              </div>
+              <span v-else class="bubble-text">{{ msg.content }}<span class="cursor">▋</span></span>
+            </template>
             <span v-else class="bubble-text">{{ msg.content }}</span>
-            <span v-if="msg.role === 'assistant' && loading && i === messages.length - 1 && !msg.content" class="cursor">▋</span>
           </div>
         </div>
 
@@ -78,7 +79,7 @@
 <script>
 import { marked } from 'marked'
 
-marked.setOptions({ breaks: true })
+marked.use({ breaks: true })
 
 export default {
   data() {
@@ -175,8 +176,10 @@ export default {
           buffer = lines.pop()
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue
-            const data = line.slice(6)
-            if (data === '[DONE]' || data === '[ERROR]') return
+            const raw = line.slice(6)
+            if (raw === '[DONE]' || raw === '[ERROR]') return
+            let data
+            try { data = JSON.parse(raw) } catch { data = raw }
             this.messages[this.messages.length - 1].content += data
             this.$nextTick(() => this.scrollToBottom())
           }

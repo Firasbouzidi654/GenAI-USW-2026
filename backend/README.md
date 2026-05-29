@@ -29,7 +29,10 @@ backend/
 │   │   └── database.py       # SQLAlchemy Async Engine, get_db Dependency
 │   ├── models/
 │   │   ├── chat.py           # ChatMessage Tabelle (Prompt-Verlauf)
-│   │   └── document.py       # Document Tabelle (hochgeladene PDFs)
+│   │   ├── document.py       # Document Tabelle (hochgeladene PDFs)
+│   │   ├── exam.py           # Exam Tabelle (Prüfungstermine)
+│   │   ├── quiz_result.py    # QuizResult Tabelle (Testergebnisse)
+│   │   └── study_plan.py     # StudyPlan Tabelle (Lernpläne)
 │   ├── api/
 │   │   └── v1/
 │   │       ├── prompt.py     # POST /api/prompt, POST /api/prompt/stream
@@ -150,6 +153,9 @@ Frontend ist dann erreichbar unter: **http://localhost:5173**
 | `POST` | `/api/prompt/stream` | Prompt streamen (Server-Sent Events) |
 | `POST` | `/api/upload` | PDF hochladen und RAG-Pipeline anstoßen |
 | `GET` | `/api/history` | Letzte 50 Chat-Nachrichten aus der Datenbank abrufen |
+| `GET` | `/api/exams` | Alle Prüfungen abrufen (sortiert nach Datum) |
+| `POST` | `/api/exams` | Neue Prüfung anlegen |
+| `DELETE` | `/api/exams/{id}` | Prüfung löschen |
 
 ### POST `/api/prompt`
 

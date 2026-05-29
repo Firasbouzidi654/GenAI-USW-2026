@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import history, prompt, upload
+from app.api.v1 import exams, history, prompt, upload
 from app.core.database import Base, engine
 import app.models  # noqa: F401 — registers models with Base
 
@@ -30,6 +30,7 @@ app.add_middleware(
 app.include_router(prompt.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
+app.include_router(exams.router, prefix="/api")
 
 
 @app.get("/health")

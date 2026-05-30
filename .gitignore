@@ -2,5 +2,8 @@ node_modules
 .idea
 .venv
 backend/.env
+backend/uploads/
 __pycache__/
 *.pyc
+CLAUDE.md
+uv.lock

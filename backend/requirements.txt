@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+pydantic-settings
+sqlalchemy
+asyncpg
+greenlet
+chromadb
+langchain
+langchain-text-splitters
+pypdf
+google-genai
+python-multipart
+python-dotenv
+pytest
+pytest-asyncio
+httpx

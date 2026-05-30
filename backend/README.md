@@ -9,7 +9,7 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 | Komponente | Technologie |
 |---|---|
 | API Framework | FastAPI |
-| LLM | Google Gemini (`gemini-1.5-flash`) |
+| LLM | Google Gemini (`gemini-3.1-flash-lite-preview`) |
 | Datenbank (relational) | PostgreSQL 16 |
 | Vektordatenbank | ChromaDB |
 | Agenten-Framework | LangGraph |
@@ -23,13 +23,19 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 ```
 backend/
 ├── app/
-│   ├── main.py               # FastAPI Entry Point, Router-Registrierung
+│   ├── main.py               # FastAPI Entry Point, Router-Registrierung, Lifespan
 │   ├── core/
 │   │   ├── config.py         # Einstellungen & Umgebungsvariablen
-│   │   └── database.py       # DB-Verbindungen (PostgreSQL & Chroma)
+│   │   └── database.py       # SQLAlchemy Async Engine, get_db Dependency
+│   ├── models/
+│   │   ├── chat.py           # ChatMessage Tabelle (Prompt-Verlauf)
+│   │   ├── document.py       # Document Tabelle (hochgeladene PDFs)
+│   │   ├── exam.py           # Exam Tabelle (Prüfungstermine)
+│   │   ├── quiz_result.py    # QuizResult Tabelle (Testergebnisse)
+│   │   └── study_plan.py     # StudyPlan Tabelle (Lernpläne)
 │   ├── api/
 │   │   └── v1/
-│   │       ├── prompt.py     # POST /api/prompt
+│   │       ├── prompt.py     # POST /api/prompt, POST /api/prompt/stream
 │   │       └── upload.py     # POST /api/upload
 │   ├── agents/
 │   │   ├── tutor_agent.py    # LangGraph Tutor-Agent (Modul A)
@@ -82,10 +88,12 @@ source .venv/bin/activate
 ### 3. Abhängigkeiten installieren
 
 ```bash
-pip install fastapi uvicorn pydantic-settings asyncpg \
-            sqlalchemy chromadb langchain \
-            google-generativeai \
-            python-multipart python-dotenv
+pip install fastapi uvicorn pydantic-settings \
+            sqlalchemy asyncpg greenlet \
+            chromadb langchain \
+            google-genai \
+            python-multipart python-dotenv \
+            pytest pytest-asyncio httpx
 ```
 
 ### 4. Umgebungsvariablen einrichten
@@ -142,38 +150,59 @@ Frontend ist dann erreichbar unter: **http://localhost:5173**
 | `GET` | `/health` | Statuscheck |
 | `GET` | `/docs` | Interaktive API-Dokumentation (Swagger UI) |
 | `POST` | `/api/prompt` | Prompt an Gemini senden, Antwort erhalten |
+| `POST` | `/api/prompt/stream` | Prompt streamen (Server-Sent Events) |
 | `POST` | `/api/upload` | PDF hochladen und RAG-Pipeline anstoßen |
+| `GET` | `/api/history` | Letzte 50 Chat-Nachrichten aus der Datenbank abrufen |
+| `GET` | `/api/exams` | Alle Prüfungen abrufen (sortiert nach Datum) |
+| `POST` | `/api/exams` | Neue Prüfung anlegen |
+| `DELETE` | `/api/exams/{id}` | Prüfung löschen |
 
 ### POST `/api/prompt`
 
+Request:
 ```json
-// Request
 { "prompt": "Was ist eine SQL JOIN-Operation?" }
+```
 
-// Response
+Response:
+```json
 { "response": "Eine JOIN-Operation verbindet..." }
+```
+
+Fehlercodes: `422` bei fehlendem Feld, `502` wenn Gemini nicht erreichbar ist oder das API-Kontingent erschöpft ist (429 von Gemini).
+
+### POST `/api/prompt/stream`
+
+Gleicher Request-Body wie `/api/prompt`. Gibt einen `text/event-stream` zurück — Antwort kommt Stück für Stück an:
+
+```
+data: Eine JOIN-
+data: Operation verbindet...
+data: [DONE]
 ```
 
 ### POST `/api/upload`
 
-Multipart-Form mit einem Feld `file` (PDF).
+Multipart-Form mit einem Feld `file` (nur PDF erlaubt).
 
 ```bash
 curl -X POST http://localhost:8080/api/upload \
      -F "file=@skript.pdf"
 ```
 
+Response:
 ```json
-// Response
 { "status": "ok", "filename": "skript.pdf" }
 ```
+
+Fehlercodes: `400` bei Nicht-PDF oder ungültigem Dateinamen, `500` bei Speicherfehler.
 
 ---
 
 ## RAG-Pipeline (Laszlo)
 
 Die Endpunkte rufen zwei Stubs auf, die noch implementiert werden müssen:
-
+    
 | Datei | Funktion | Aufgabe |
 |---|---|---|
 | `app/rag/pipeline.py` | `process_document(file_path)` | PDF parsen, chunken, embedden, in ChromaDB speichern |

@@ -26,8 +26,8 @@ def _build_prompt(user_prompt: str, context: str) -> str:
     return user_prompt
 
 
-@router.post("/prompt/stream")
-async def stream_prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
+@router.post("/prompt")
+async def prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
     context = await retrieve_context(body.prompt)
     full_prompt = _build_prompt(body.prompt, context)
 

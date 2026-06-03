@@ -17,6 +17,18 @@
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
             </ul>
+            <div v-if="item.id === 'career'" class="job-agent-section">
+              <button
+                @click.stop="launchJobAgent"
+                :disabled="jobAgentLoading"
+                class="job-agent-btn"
+              >
+                {{ jobAgentLoading ? '⏳ Launching...' : '🚀 Launch Job Search Agent' }}
+              </button>
+              <p v-if="jobAgentStatus" :class="['job-agent-status', jobAgentStatus.type]">
+                {{ jobAgentStatus.message }}
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -89,6 +101,8 @@ export default {
       loading: false,
       activePanel: null,
       uploadStatus: '',
+      jobAgentLoading: false,
+      jobAgentStatus: null,
       isDark: false,
       navItems: [
         {
@@ -188,6 +202,27 @@ export default {
         this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
       } finally {
         this.loading = false
+      }
+    },
+    async launchJobAgent() {
+      this.jobAgentLoading = true
+      this.jobAgentStatus = null
+      try {
+        const res = await fetch('/api/job-agent/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        })
+        if (res.ok) {
+          this.jobAgentStatus = { type: 'success', message: 'Job Search Agent launched!' }
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.jobAgentStatus = { type: 'error', message: data.detail || 'Failed to launch agent.' }
+        }
+      } catch {
+        this.jobAgentStatus = { type: 'error', message: 'Error: Backend not reachable.' }
+      } finally {
+        this.jobAgentLoading = false
       }
     },
     async uploadFile(event) {
@@ -566,4 +601,36 @@ body {
   color: var(--text-muted);
   text-align: center;
 }
+
+/* JOB AGENT */
+.job-agent-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.job-agent-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.job-agent-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.job-agent-btn:disabled { background: var(--border); cursor: default; }
+
+.job-agent-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.job-agent-status.success { color: #16a34a; }
+.job-agent-status.error { color: #dc2626; }
 </style>

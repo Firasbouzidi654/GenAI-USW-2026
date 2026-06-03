@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 150
     rag_top_k: int = 4
+    # Paste the n8n Production Webhook URL here (see README for setup instructions)
+    n8n_job_agent_webhook_url: str = ""
 
 
 settings = Settings()

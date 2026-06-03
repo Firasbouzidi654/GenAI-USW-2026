@@ -120,3 +120,52 @@ The system calculates a compatibility score based on:
 8. The Study Agent creates a learning plan to acquire those skills.
 9. The system generates application documents when the user is ready to apply.
 
+---
+
+## n8n Job Search Agent Setup
+
+The frontend has a **"Launch Job Search Agent"** button inside the Career panel that manually triggers an n8n workflow via webhook.
+
+### Steps to connect n8n
+
+1. **Replace the Schedule Trigger** in your n8n workflow with a **Webhook** node.
+   - In the n8n editor, delete the Schedule Trigger and add a Webhook node as the first node.
+
+2. **Copy the Production Webhook URL**
+   - In the Webhook node settings, switch to **Production** mode and copy the URL.
+   - It looks like: `https://your-n8n-instance.com/webhook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+
+3. **Paste it into `backend/.env`**
+   ```env
+   N8N_JOB_AGENT_WEBHOOK_URL=https://your-n8n-instance.com/webhook/your-webhook-id
+   ```
+
+4. **Activate the n8n workflow**
+   - Toggle the workflow to **Active** in the top-right corner of the n8n editor.
+   - The Production Webhook URL only works when the workflow is active.
+
+5. **Restart the backend** so it picks up the new environment variable:
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+
+6. **Click "Launch Job Search Agent"** in the Career dropdown — the button calls `POST /api/job-agent/run`, which forwards the request to n8n and shows a success or error message.
+
+### API endpoint
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/job-agent/run` | Triggers the n8n webhook and starts the job search workflow |
+
+**Request body (all fields optional):**
+```json
+{
+  "keyword": "Data Analyst",
+  "location": "Berlin",
+  "experienceLevel": "entry",
+  "remote": "true",
+  "jobType": "fulltime",
+  "easyApply": true
+}
+```
+

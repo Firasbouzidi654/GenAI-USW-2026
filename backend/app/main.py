@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import exams, history, job_agent, prompt, upload
 from app.core.database import Base, engine
-import app.models  # noqa: F401 — registers models with Base
+import app.models
 
 
 @asynccontextmanager
@@ -14,7 +14,7 @@ async def lifespan(_app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception:
-        pass  # PostgreSQL nicht verfügbar, Tabellen werden später erstellt
+        pass
     yield
 
 

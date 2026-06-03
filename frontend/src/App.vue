@@ -174,7 +174,7 @@ export default {
       this.scrollToBottom()
 
       try {
-        const res = await fetch('/api/prompt/stream', {
+        const res = await fetch('/api/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt: userPrompt })

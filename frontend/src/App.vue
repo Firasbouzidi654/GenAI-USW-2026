@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" class="dropdown">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -28,6 +28,86 @@
               <p v-if="jobAgentStatus" :class="['job-agent-status', jobAgentStatus.type]">
                 {{ jobAgentStatus.message }}
               </p>
+            </div>
+
+            <div v-if="item.id === 'kalender'" class="kalender-section">
+
+              <!-- Toolbar -->
+              <div class="kalender-toolbar">
+                <label class="kalender-upload-label">
+                  📂 .ics laden
+                  <input type="file" accept=".ics" @change="uploadIcsFile" hidden />
+                </label>
+                <button
+                  v-if="calendarEvents.length > 0"
+                  @click.stop="clearCalendar"
+                  :disabled="calendarClearing"
+                  class="kalender-clear-btn"
+                  title="Kalender leeren"
+                >🗑</button>
+              </div>
+
+              <p v-if="icsUploadStatus" :class="['kalender-status', icsUploadStatus.type]">
+                {{ icsUploadStatus.message }}
+              </p>
+
+              <!-- Search -->
+              <input
+                v-if="calendarEvents.length > 0"
+                v-model="calendarSearch"
+                @click.stop
+                class="kalender-search"
+                placeholder="Kurs suchen..."
+                type="text"
+              />
+
+              <!-- Empty states -->
+              <div v-if="calendarEvents.length === 0" class="kalender-empty">
+                Noch keine Ereignisse geladen.
+              </div>
+              <div v-else-if="filteredCalendarEvents.length === 0" class="kalender-empty">
+                Kein Kurs gefunden.
+              </div>
+
+              <!-- Grouped event cards -->
+              <div v-else class="kalender-groups">
+                <div v-for="group in visibleGroupedEvents" :key="group.date" class="kalender-group">
+                  <div class="kalender-date-header">{{ group.label }}</div>
+                  <div
+                    v-for="event in group.events"
+                    :key="event.id"
+                    :class="['kalender-card', eventTypeClass(event.title)]"
+                  >
+                    <div class="kalender-card-body">
+                      <div class="kalender-card-top">
+                        <span class="kalender-card-name">{{ parseCourseName(event.title) }}</span>
+                        <span v-if="parseEventType(event.title)" class="kalender-card-badge">
+                          {{ parseEventType(event.title) }}
+                        </span>
+                      </div>
+                      <div class="kalender-card-time">
+                        🕐 {{ formatTime(event.start_time) }} – {{ formatTime(event.end_time) }}
+                      </div>
+                      <div v-if="event.location" class="kalender-card-meta">
+                        📍 {{ event.location }}
+                      </div>
+                      <div v-if="extractProfessor(event.description)" class="kalender-card-meta">
+                        👤 {{ extractProfessor(event.description) }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Show all / less toggle -->
+              <button
+                v-if="filteredCalendarEvents.length > 10"
+                @click.stop="calendarShowAll = !calendarShowAll"
+                class="kalender-toggle-btn"
+              >
+                {{ calendarShowAll ? '▲ Weniger anzeigen' : `▼ Alle ${filteredCalendarEvents.length} anzeigen` }}
+              </button>
+
             </div>
           </div>
         </div>
@@ -104,6 +184,11 @@ export default {
       jobAgentLoading: false,
       jobAgentStatus: null,
       isDark: false,
+      calendarEvents: [],
+      icsUploadStatus: null,
+      calendarSearch: '',
+      calendarShowAll: false,
+      calendarClearing: false,
       navItems: [
         {
           id: 'pruefungen',
@@ -128,12 +213,43 @@ export default {
           label: 'Career',
           icon: '💼',
           entries: ['SQL: ⭐⭐☆☆☆', 'Python: ⭐⭐⭐☆☆', 'Power BI: ⭐☆☆☆☆', 'Job Fit: 62%']
+        },
+        {
+          id: 'kalender',
+          label: 'Kalender',
+          icon: '📆',
+          entries: []
         }
       ]
     }
   },
+  computed: {
+    filteredCalendarEvents() {
+      const now = new Date()
+      const q = this.calendarSearch.trim().toLowerCase()
+      return this.calendarEvents
+        .filter(e => new Date(e.start_time) >= now)
+        .filter(e => !q || e.title.toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q))
+        .sort((a, b) => new Date(a.start_time) - new Date(b.start_time))
+    },
+    visibleGroupedEvents() {
+      const events = this.calendarShowAll
+        ? this.filteredCalendarEvents
+        : this.filteredCalendarEvents.slice(0, 10)
+      const groups = {}
+      for (const event of events) {
+        const key = event.start_time.slice(0, 10)
+        if (!groups[key]) {
+          groups[key] = { date: key, label: this.formatDateHeader(event.start_time), events: [] }
+        }
+        groups[key].events.push(event)
+      }
+      return Object.values(groups)
+    }
+  },
   mounted() {
     this.isDark = localStorage.getItem('darkMode') === 'true'
+    this.fetchCalendarEvents()
   },
   methods: {
     toggleDark() {
@@ -223,6 +339,94 @@ export default {
         this.jobAgentStatus = { type: 'error', message: 'Error: Backend not reachable.' }
       } finally {
         this.jobAgentLoading = false
+      }
+    },
+    async fetchCalendarEvents() {
+      try {
+        const res = await fetch('/api/calendar/events')
+        if (res.ok) {
+          this.calendarEvents = await res.json()
+        }
+      } catch {
+        // Backend nicht erreichbar beim Start — kein Fehler anzeigen
+      }
+    },
+    formatTime(isoString) {
+      return new Date(isoString).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+    },
+    formatDateHeader(isoString) {
+      const d = new Date(isoString)
+      const today = new Date()
+      const tomorrow = new Date(today)
+      tomorrow.setDate(today.getDate() + 1)
+      if (d.toDateString() === today.toDateString()) return 'Heute'
+      if (d.toDateString() === tomorrow.toDateString()) return 'Morgen'
+      return d.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })
+    },
+    parseEventType(title) {
+      if (!title) return ''
+      const m = title.match(/\b(PCÜ|SL|VL|UEb|UE|Ü|PR|SE|GK|TU|VO|KO|BS|EX)\s*$/i)
+      return m ? m[1].toUpperCase() : ''
+    },
+    parseCourseName(title) {
+      if (!title) return title
+      return title.replace(/\s*\b(PCÜ|SL|VL|UEb|UE|Ü|PR|SE|GK|TU|VO|KO|BS|EX)\s*$/i, '').trim()
+    },
+    eventTypeClass(title) {
+      const map = { SL: 'etype-sl', PCÜ: 'etype-pcu', VL: 'etype-vl', UE: 'etype-ue', Ü: 'etype-ue', UEB: 'etype-ue', PR: 'etype-pr', SE: 'etype-se' }
+      return map[this.parseEventType(title)] || 'etype-other'
+    },
+    extractProfessor(description) {
+      if (!description) return ''
+      const m = description.match(/((?:Prof\.|Dr\.|Dipl\.)[^\n,]{2,40})/i)
+      if (m) return m[1].trim()
+      if (description.length > 0 && description.length < 60) return description.trim()
+      return ''
+    },
+    async uploadIcsFile(event) {
+      const file = event.target.files[0]
+      if (!file) return
+      event.target.value = ''
+
+      const webhookUrl = import.meta.env.VITE_N8N_CALENDAR_WEBHOOK_URL
+      if (!webhookUrl) {
+        this.icsUploadStatus = { type: 'error', message: 'VITE_N8N_CALENDAR_WEBHOOK_URL nicht konfiguriert.' }
+        return
+      }
+
+      this.icsUploadStatus = { type: 'info', message: `"${file.name}" wird gesendet...` }
+      const formData = new FormData()
+      formData.append('file', file)
+
+      try {
+        const res = await fetch(webhookUrl, { method: 'POST', body: formData })
+        if (res.ok) {
+          this.icsUploadStatus = { type: 'success', message: 'Kalender erfolgreich synchronisiert!' }
+          setTimeout(() => this.fetchCalendarEvents(), 2000)
+        } else {
+          this.icsUploadStatus = { type: 'error', message: `Fehler vom n8n-Webhook (${res.status}).` }
+        }
+      } catch {
+        this.icsUploadStatus = { type: 'error', message: 'n8n-Webhook nicht erreichbar.' }
+      }
+    },
+    async clearCalendar() {
+      if (!confirm('Alle Kalender-Events löschen?')) return
+      this.calendarClearing = true
+      try {
+        const res = await fetch('/api/calendar/events', { method: 'DELETE' })
+        if (res.ok) {
+          this.calendarEvents = []
+          this.calendarSearch = ''
+          this.calendarShowAll = false
+          this.icsUploadStatus = { type: 'success', message: 'Kalender geleert.' }
+        } else {
+          this.icsUploadStatus = { type: 'error', message: 'Fehler beim Löschen.' }
+        }
+      } catch {
+        this.icsUploadStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.calendarClearing = false
       }
     },
     async uploadFile(event) {
@@ -633,4 +837,193 @@ body {
 
 .job-agent-status.success { color: #16a34a; }
 .job-agent-status.error { color: #dc2626; }
+
+/* KALENDER */
+.dropdown--wide { min-width: 360px; max-width: 400px; }
+
+.kalender-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.kalender-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.kalender-upload-label {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.kalender-upload-label:hover { background: var(--primary-hover); }
+
+.kalender-clear-btn {
+  padding: 7px 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.kalender-clear-btn:hover:not(:disabled) { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+.kalender-clear-btn:disabled { opacity: 0.5; cursor: default; }
+
+.kalender-search {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.kalender-search:focus { border-color: var(--primary); }
+.kalender-search::placeholder { color: var(--text-muted); }
+
+.kalender-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.kalender-status.success { color: #16a34a; }
+.kalender-status.error   { color: #dc2626; }
+.kalender-status.info    { color: var(--text-muted); }
+
+.kalender-empty {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.kalender-groups {
+  margin-top: 10px;
+  max-height: 380px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kalender-date-header {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.kalender-card {
+  display: flex;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-bottom: 6px;
+  background: var(--surface-hover);
+  border-left-width: 3px;
+}
+
+.kalender-card:last-child { margin-bottom: 0; }
+
+/* Type accent colors via left border */
+.etype-sl    { border-left-color: #6366f1; }
+.etype-pcu   { border-left-color: #10b981; }
+.etype-vl    { border-left-color: #3b82f6; }
+.etype-ue    { border-left-color: #f59e0b; }
+.etype-pr    { border-left-color: #14b8a6; }
+.etype-se    { border-left-color: #8b5cf6; }
+.etype-other { border-left-color: var(--border); }
+
+.kalender-card-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.kalender-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.kalender-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kalender-card-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--primary-dim);
+  color: var(--primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.kalender-card-time {
+  font-size: 11px;
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.kalender-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kalender-toggle-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 6px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.kalender-toggle-btn:hover { background: var(--surface-hover); color: var(--text); }
 </style>

@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -109,6 +109,60 @@
               </button>
 
             </div>
+
+            <div v-if="item.id === 'noten'" class="noten-section">
+              <div class="noten-toolbar">
+                <label class="noten-upload-label">
+                  📂 PDF auswählen
+                  <input type="file" accept=".pdf" @change="selectGradesPdf" hidden />
+                </label>
+              </div>
+              <p v-if="gradesFileName" class="noten-filename">📄 {{ gradesFileName }}</p>
+              <button
+                v-if="gradesFileName"
+                @click.stop="extractGrades"
+                :disabled="gradesLoading"
+                class="noten-extract-btn"
+              >
+                {{ gradesLoading ? '⏳ Extrahieren...' : '🔍 Noten extrahieren' }}
+              </button>
+              <p v-if="gradesStatus" :class="['noten-status', gradesStatus.type]">
+                {{ gradesStatus.message }}
+              </p>
+              <div v-if="gradesData && gradesData.courses.length > 0" class="noten-results">
+                <div v-if="gradesData.studentName || gradesData.totalCredits" class="noten-summary">
+                  <span v-if="gradesData.studentName" class="noten-student">{{ gradesData.studentName }}</span>
+                  <span v-if="gradesData.totalCredits" class="noten-credits">{{ gradesData.totalCredits }} ECTS gesamt</span>
+                </div>
+                <div class="noten-table-wrap">
+                  <table class="noten-table">
+                    <thead>
+                      <tr>
+                        <th>Kurs</th>
+                        <th>Sem.</th>
+                        <th>Note</th>
+                        <th>ECTS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(c, i) in sortedGradesCourses" :key="i">
+                        <td>{{ c.courseName }}</td>
+                        <td>{{ c.semester }}</td>
+                        <td class="noten-grade">{{ c.grade }}</td>
+                        <td>{{ c.credits }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div v-else-if="gradesData" class="noten-empty">
+                Keine Noten gefunden.
+              </div>
+              <div v-else class="noten-empty">
+                Noch keine Noten geladen.
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
@@ -189,6 +243,11 @@ export default {
       calendarSearch: '',
       calendarShowAll: false,
       calendarClearing: false,
+      gradesFile: null,
+      gradesFileName: '',
+      gradesLoading: false,
+      gradesStatus: null,
+      gradesData: null,
       navItems: [
         {
           id: 'pruefungen',
@@ -219,6 +278,12 @@ export default {
           label: 'Kalender',
           icon: '📆',
           entries: []
+        },
+        {
+          id: 'noten',
+          label: 'Noten',
+          icon: '🎓',
+          entries: []
         }
       ]
     }
@@ -231,6 +296,11 @@ export default {
         .filter(e => new Date(e.start_time) >= now)
         .filter(e => !q || e.title.toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q))
         .sort((a, b) => new Date(a.start_time) - new Date(b.start_time))
+    },
+    sortedGradesCourses() {
+      if (!this.gradesData?.courses) return []
+      const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
+      return [...this.gradesData.courses].sort((a, b) => parse(a.grade) - parse(b.grade))
     },
     visibleGroupedEvents() {
       const events = this.calendarShowAll
@@ -448,6 +518,38 @@ export default {
         this.uploadStatus = 'Fehler: Backend nicht erreichbar.'
       }
       event.target.value = ''
+    },
+    selectGradesPdf(event) {
+      const file = event.target.files[0]
+      if (!file) return
+      this.gradesFile = file
+      this.gradesFileName = file.name
+      this.gradesData = null
+      this.gradesStatus = null
+      event.target.value = ''
+    },
+    async extractGrades() {
+      if (!this.gradesFile) return
+      this.gradesLoading = true
+      this.gradesStatus = { type: 'info', message: 'PDF wird verarbeitet...' }
+      const formData = new FormData()
+      formData.append('file', this.gradesFile)
+      try {
+        const res = await fetch('/api/grades/upload', { method: 'POST', body: formData })
+        if (res.ok) {
+          this.gradesData = await res.json()
+          this.gradesStatus = this.gradesData.courses.length > 0
+            ? { type: 'success', message: `${this.gradesData.courses.length} Kurse extrahiert.` }
+            : { type: 'info', message: 'Keine Noten im Dokument gefunden.' }
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.gradesStatus = { type: 'error', message: data.detail || 'Fehler bei der Extraktion.' }
+        }
+      } catch {
+        this.gradesStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.gradesLoading = false
+      }
     }
   }
 }
@@ -1026,4 +1128,143 @@ body {
 }
 
 .kalender-toggle-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+/* NOTEN */
+.dropdown--extra-wide { min-width: 560px; max-width: 620px; }
+
+.noten-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.noten-toolbar { display: flex; gap: 6px; }
+
+.noten-upload-label {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.noten-upload-label:hover { background: var(--primary-hover); }
+
+.noten-filename {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.noten-extract-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.noten-extract-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.noten-extract-btn:disabled { background: var(--border); cursor: default; }
+
+.noten-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.noten-status.success { color: #16a34a; }
+.noten-status.error   { color: #dc2626; }
+.noten-status.info    { color: var(--text-muted); }
+
+.noten-empty {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.noten-results { margin-top: 12px; }
+
+.noten-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.noten-student {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.noten-credits {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.noten-table-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.noten-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.noten-table thead tr {
+  background: var(--surface-hover);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.noten-table th {
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.noten-table td {
+  padding: 6px 8px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.noten-table tbody tr:last-child td { border-bottom: none; }
+.noten-table tbody tr:hover { background: var(--surface-hover); }
+
+.noten-grade {
+  font-weight: 600;
+  color: var(--primary);
+}
 </style>

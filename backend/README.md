@@ -12,8 +12,7 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 | LLM | Google Gemini (`gemini-3.1-flash-lite-preview`) |
 | Datenbank (relational) | PostgreSQL 16 |
 | Vektordatenbank | ChromaDB |
-| Agenten-Framework | LangGraph |
-| RAG / Embeddings | LangChain |
+| RAG / Embeddings | `pypdf`, `langchain-text-splitters`, Gemini Embeddings |
 | Containerisierung | Docker |
 
 ---
@@ -23,35 +22,47 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 ```
 backend/
 ├── app/
-│   ├── main.py               # FastAPI Entry Point, Router-Registrierung, Lifespan
+│   ├── main.py                    # FastAPI Entry Point, Router-Registrierung, Lifespan
 │   ├── core/
-│   │   ├── config.py         # Einstellungen & Umgebungsvariablen
-│   │   └── database.py       # SQLAlchemy Async Engine, get_db Dependency
+│   │   ├── config.py              # Einstellungen & Umgebungsvariablen
+│   │   └── database.py            # SQLAlchemy Async Engine, get_db Dependency
 │   ├── models/
-│   │   ├── chat.py           # ChatMessage Tabelle (Prompt-Verlauf)
-│   │   ├── document.py       # Document Tabelle (hochgeladene PDFs)
-│   │   ├── exam.py           # Exam Tabelle (Prüfungstermine)
-│   │   ├── quiz_result.py    # QuizResult Tabelle (Testergebnisse)
-│   │   └── study_plan.py     # StudyPlan Tabelle (Lernpläne)
-│   ├── api/
-│   │   └── v1/
-│   │       ├── prompt.py     # POST /api/prompt, POST /api/prompt/stream
-│   │       └── upload.py     # POST /api/upload
-│   ├── agents/
-│   │   ├── tutor_agent.py    # LangGraph Tutor-Agent (Modul A)
-│   │   └── job_agent.py      # Job-Matching & Anschreiben (Modul B)
-│   ├── mcp_servers/
-│   │   ├── htw_integration.py      # HTW Noten, Termine, Module
-│   │   ├── job_portal_gateway.py   # LinkedIn, StepStone, Indeed
-│   │   └── file_bridge.py          # PDF Parsing & Verwaltung
+│   │   ├── academic_event.py      # Planner-Deadlines (Prüfungen, Abgaben, Präsentationen)
+│   │   ├── attempt_answer.py      # Einzelantworten eines Quiz-Versuchs
+│   │   ├── calendar_event.py      # Stundenplan-Einträge (aus .ics importiert)
+│   │   ├── chat.py                # ChatMessage (Prompt-Verlauf)
+│   │   ├── document.py            # Hochgeladene PDFs
+│   │   ├── exam.py                # Prüfungstermine
+│   │   ├── grade.py               # Noteneinträge
+│   │   ├── quiz.py                # Generierte Quizze
+│   │   ├── quiz_attempt.py        # Quiz-Versuche mit Score
+│   │   ├── quiz_question.py       # Einzelne Quizfragen (MC / TF)
+│   │   ├── quiz_result.py         # Einfache Quiz-Ergebnisse (Legacy)
+│   │   └── study_plan.py          # Lernpläne
+│   ├── api/v1/
+│   │   ├── prompt.py              # POST /api/prompt (Streaming-Chat)
+│   │   ├── upload.py              # POST /api/upload, GET /api/documents
+│   │   ├── history.py             # GET /api/history
+│   │   ├── exams.py               # CRUD /api/exams
+│   │   ├── calendar.py            # CRUD /api/calendar/events
+│   │   ├── grades.py              # POST /api/grades/upload (→ n8n)
+│   │   ├── job_agent.py           # POST /api/job-agent/run (→ n8n)
+│   │   ├── planner.py             # CRUD /api/planner/events
+│   │   ├── study_advisor.py       # POST /api/ai/study-advisor
+│   │   └── tutor.py               # /api/tutor/* (Quiz-Generierung & Auswertung)
+│   ├── services/
+│   │   ├── planner_service.py     # Prioritäts-Berechnung für Events
+│   │   ├── study_advisor_service.py  # KI-Lernberatung via Gemini + RAG
+│   │   └── tutor_service.py       # Quiz-Generierung via Gemini + RAG
 │   └── rag/
-│       ├── pipeline.py       # Stub: Chunking & Embedding (→ Laszlo)
-│       └── retriever.py      # Stub: Vektor-Suche & Kontext-Abruf (→ Laszlo)
-├── uploads/                  # Hochgeladene PDFs (wird automatisch erstellt)
+│       ├── store.py               # ChromaDB-Client & Gemini-Embedding-Hilfsklassen
+│       ├── pipeline.py            # PDF → Text → Chunks → Embeddings → ChromaDB
+│       └── retriever.py           # Query embedden → ChromaDB-Suche → Kontext-String
+├── uploads/                       # Hochgeladene PDFs (wird automatisch erstellt)
 ├── tests/
-├── .env                      # Eure lokalen API-Keys (nicht ins Git!)
-├── .env.example              # Vorlage für .env
-└── docker-compose.yml        # PostgreSQL & ChromaDB Container
+├── .env                           # Lokale API-Keys (nicht ins Git!)
+├── .env.example                   # Vorlage für .env
+└── docker-compose.yml             # PostgreSQL & ChromaDB Container
 ```
 
 ---
@@ -59,166 +70,129 @@ backend/
 ## Voraussetzungen
 
 - **Python 3.11+**
-- **Node.js 18+** (für das Frontend)
 - **Docker Desktop** (muss im Hintergrund laufen)
 
 ---
 
 ## Setup – Schritt für Schritt
 
-### 1. Repository klonen
+### 1. Virtuelle Python-Umgebung aktivieren
 
 ```bash
-git clone <repo-url>
-cd <repo-ordner>
-```
-
-### 2. Virtuelle Python-Umgebung erstellen & aktivieren
-
-```bash
-python3 -m venv .venv
-
-# macOS/Linux
 source .venv/bin/activate
-
-# Windows
-.venv\Scripts\activate
 ```
 
-### 3. Abhängigkeiten installieren
-
-```bash
-pip install fastapi uvicorn pydantic-settings \
-            sqlalchemy asyncpg greenlet \
-            chromadb langchain \
-            google-genai \
-            python-multipart python-dotenv \
-            pytest pytest-asyncio httpx
-```
-
-### 4. Umgebungsvariablen einrichten
+### 2. Umgebungsvariablen einrichten
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-Dann `backend/.env` öffnen und ausfüllen:
+`backend/.env` öffnen und ausfüllen:
 
 ```
 GEMINI_API_KEY=AIza...
 POSTGRES_URL=postgresql+asyncpg://agent_user:agent_pass@localhost:5432/agent_db
 CHROMA_HOST=localhost
 CHROMA_PORT=8000
+N8N_JOB_AGENT_WEBHOOK_URL=http://...   # optional, für Job-Agent
 ```
 
-> ⚠️ Die `.env` Datei niemals ins Git committen – sie ist in `.gitignore` eingetragen.
+> ⚠️ Die `.env` Datei niemals ins Git committen.
 
-### 5. Datenbanken starten (Docker)
+### 3. Datenbanken starten (Docker)
 
 ```bash
-cd backend
-docker compose up -d
+cd backend && docker compose up -d
 ```
 
-Startet PostgreSQL (Port 5432) und ChromaDB (Port 8000) als Hintergrundprozesse.
+Startet PostgreSQL (Port 5432) und ChromaDB (Port 8000).
 
-### 6. Backend starten
-
-ChromaDB belegt Port 8000, daher läuft das Backend auf Port **8080**:
+### 4. Backend starten
 
 ```bash
-cd backend
-uvicorn app.main:app --reload --port 8080
+source .venv/bin/activate
+cd backend && uvicorn app.main:app --reload --port 8080
 ```
 
-### 7. Frontend starten
-
-```bash
-cd frontend
-npm install   # nur beim ersten Mal
-npm run dev
-```
-
-Frontend ist dann erreichbar unter: **http://localhost:5173**
+Beim ersten Start legt `create_all` alle Tabellen automatisch an.
 
 ---
 
 ## API-Endpunkte
 
+### Chat & Upload
+
 | Methode | URL | Beschreibung |
 |---|---|---|
 | `GET` | `/health` | Statuscheck |
-| `GET` | `/docs` | Interaktive API-Dokumentation (Swagger UI) |
-| `POST` | `/api/prompt` | Prompt an Gemini senden, Antwort erhalten |
-| `POST` | `/api/prompt/stream` | Prompt streamen (Server-Sent Events) |
-| `POST` | `/api/upload` | PDF hochladen und RAG-Pipeline anstoßen |
-| `GET` | `/api/history` | Letzte 50 Chat-Nachrichten aus der Datenbank abrufen |
-| `GET` | `/api/exams` | Alle Prüfungen abrufen (sortiert nach Datum) |
-| `POST` | `/api/exams` | Neue Prüfung anlegen |
-| `DELETE` | `/api/exams/{id}` | Prüfung löschen |
+| `POST` | `/api/prompt` | Streaming-Chat mit Gemini + RAG |
+| `POST` | `/api/upload` | PDF hochladen, RAG-Pipeline anstoßen |
+| `GET` | `/api/documents` | Liste aller hochgeladenen Dokumente (Dateinamen) |
+| `GET` | `/api/history` | Letzte 50 Chat-Nachrichten |
 
-### POST `/api/prompt`
+### Kalender
 
-Request:
-```json
-{ "prompt": "Was ist eine SQL JOIN-Operation?" }
-```
-
-Response:
-```json
-{ "response": "Eine JOIN-Operation verbindet..." }
-```
-
-Fehlercodes: `422` bei fehlendem Feld, `502` wenn Gemini nicht erreichbar ist oder das API-Kontingent erschöpft ist (429 von Gemini).
-
-### POST `/api/prompt/stream`
-
-Gleicher Request-Body wie `/api/prompt`. Gibt einen `text/event-stream` zurück — Antwort kommt Stück für Stück an:
-
-```
-data: Eine JOIN-
-data: Operation verbindet...
-data: [DONE]
-```
-
-### POST `/api/upload`
-
-Multipart-Form mit einem Feld `file` (nur PDF erlaubt).
-
-```bash
-curl -X POST http://localhost:8080/api/upload \
-     -F "file=@skript.pdf"
-```
-
-Response:
-```json
-{ "status": "ok", "filename": "skript.pdf" }
-```
-
-Fehlercodes: `400` bei Nicht-PDF oder ungültigem Dateinamen, `500` bei Speicherfehler.
-
----
-
-## RAG-Pipeline (Laszlo)
-
-Die Endpunkte rufen zwei Stubs auf, die noch implementiert werden müssen:
-    
-| Datei | Funktion | Aufgabe |
+| Methode | URL | Beschreibung |
 |---|---|---|
-| `app/rag/pipeline.py` | `process_document(file_path)` | PDF parsen, chunken, embedden, in ChromaDB speichern |
-| `app/rag/retriever.py` | `retrieve_context(query)` | Query embedden, ChromaDB durchsuchen, Kontext als String zurückgeben |
+| `GET` | `/api/calendar/events` | Alle Stundenplan-Einträge |
+| `POST` | `/api/calendar/events` | Batch-Upsert (aus n8n .ics-Verarbeitung) |
+| `DELETE` | `/api/calendar/events` | Alle Events löschen |
+| `DELETE` | `/api/calendar/events/{id}` | Einzelnes Event löschen |
 
-Sobald diese beiden Funktionen implementiert sind, nutzen `/api/prompt` und `/api/upload` sie automatisch.
+### Planner
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `GET` | `/api/planner/events` | Alle Deadlines |
+| `GET` | `/api/planner/events/upcoming` | Nur zukünftige Deadlines |
+| `POST` | `/api/planner/events` | Neue Deadline anlegen (EXAM / ASSIGNMENT / PRESENTATION) |
+| `DELETE` | `/api/planner/events/{id}` | Deadline löschen |
+
+### KI-Dienste
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `POST` | `/api/ai/study-advisor` | Lernberatung basierend auf Planner + Kalender |
+| `POST` | `/api/grades/upload` | Notenübersicht-PDF → n8n → strukturierte Daten |
+| `POST` | `/api/job-agent/run` | Job-Suche via n8n-Webhook starten |
+
+### Tutor (Quiz)
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `POST` | `/api/tutor/quiz/generate` | Quiz aus hochgeladenen Dokumenten generieren |
+| `GET` | `/api/tutor/quizzes` | Alle gespeicherten Quizze |
+| `GET` | `/api/tutor/quiz/{id}` | Einzelnes Quiz mit Fragen laden |
+| `POST` | `/api/tutor/quiz/{id}/submit` | Antworten einreichen, Score berechnen |
+| `GET` | `/api/tutor/stats` | Stärken/Schwächen-Analyse über alle Versuche |
 
 ---
 
-## Architektur-Überblick
+## RAG-Pipeline
 
-**Modul A – Adaptiver Lernagent**
-Verarbeitet hochgeladene Vorlesungs-PDFs über eine RAG-Pipeline (Chunking → Embeddings → ChromaDB). Der LangGraph-Tutor-Agent generiert dynamisch Quizzes und schaltet bei schlechter Performance automatisch auf alternative Lernressourcen um.
+Beim Hochladen einer PDF läuft automatisch im Hintergrund:
 
-**Modul B – KI-Jobsuche & Karriereagent**
-Vergleicht Lebenslauf-Vektoren semantisch mit Stellenanzeigen und generiert individuelle Anschreiben basierend auf den Studienmodulen des Nutzers.
+1. **Text extrahieren** – `pypdf` liest alle Seiten
+2. **Chunken** – `langchain-text-splitters` teilt in überlappende Abschnitte (Standard: 1000 Zeichen, 150 Overlap)
+3. **Embedden** – Gemini Embedding API (`gemini-embedding-001`)
+4. **Speichern** – Upsert in ChromaDB mit `source`-Metadatum (Dateiname)
 
-**MCP-Server-Infrastruktur**
-Drei spezialisierte Server kapseln externe Schnittstellen: HTW-Systeme (Noten, Prüfungstermine), Job-Portale (LinkedIn, StepStone) und das lokale Dateisystem.
+`retrieve_context(query, source_filter, n_results)` sucht relevante Chunks und gibt sie als formatierten Kontext-String zurück. `source_filter` schränkt die Suche auf bestimmte Dokumente ein (genutzt vom Tutor-Service).
+
+---
+
+## Umgebungsvariablen (`.env`)
+
+| Variable | Pflicht | Beschreibung |
+|---|---|---|
+| `GEMINI_API_KEY` | ✅ | Google Gemini API Key |
+| `POSTGRES_URL` | ✅ | AsyncPG Connection String |
+| `CHROMA_HOST` | – | ChromaDB Host (Standard: `localhost`) |
+| `CHROMA_PORT` | – | ChromaDB Port (Standard: `8000`) |
+| `CHROMA_COLLECTION` | – | Collection-Name (Standard: `documents`) |
+| `EMBEDDING_MODEL` | – | Gemini Embedding Modell (Standard: `gemini-embedding-001`) |
+| `RAG_CHUNK_SIZE` | – | Chunk-Größe in Zeichen (Standard: `1000`) |
+| `RAG_CHUNK_OVERLAP` | – | Überlappung in Zeichen (Standard: `150`) |
+| `RAG_TOP_K` | – | Anzahl RAG-Treffer für Chat (Standard: `4`) |
+| `N8N_JOB_AGENT_WEBHOOK_URL` | – | n8n Webhook für Job-Suche |

@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -47,3 +48,14 @@ async def upload_pdf(
     background_tasks.add_task(process_document_sync, str(dest))
 
     return {"status": "ok", "filename": filename}
+
+
+@router.get("/documents", response_model=list[str])
+async def list_documents(db: AsyncSession = Depends(get_db)):
+    try:
+        result = await db.execute(
+            select(Document.filename).order_by(Document.uploaded_at.desc())
+        )
+        return [row[0] for row in result.all()]
+    except Exception:
+        raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")

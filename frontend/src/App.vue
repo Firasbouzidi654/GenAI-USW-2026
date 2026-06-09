@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -216,6 +216,138 @@
               </div>
             </div>
 
+            <!-- TUTOR / QUIZ -->
+            <div v-if="item.id === 'quiz'" class="tutor-section" @click.stop>
+
+              <!-- SETUP VIEW -->
+              <div v-if="tutorView === 'setup'">
+                <div class="tutor-doc-list">
+                  <p class="tutor-label">Dokumente auswählen</p>
+                  <div v-if="tutorDocuments.length === 0" class="tutor-empty">
+                    Noch keine Dokumente hochgeladen. Lade zuerst ein PDF über das Büroklammer-Icon hoch.
+                  </div>
+                  <label v-for="doc in tutorDocuments" :key="doc" class="tutor-doc-item" @click.stop>
+                    <input type="checkbox" :value="doc" v-model="tutorSelectedDocs" @click.stop />
+                    <span class="tutor-doc-name">{{ doc }}</span>
+                  </label>
+                </div>
+                <div class="tutor-config">
+                  <div class="tutor-slider-row">
+                    <span class="tutor-label">Anzahl Fragen</span>
+                    <span class="tutor-slider-val">{{ tutorNumQuestions }}</span>
+                  </div>
+                  <input type="range" min="5" max="20" v-model.number="tutorNumQuestions" class="tutor-slider" @click.stop />
+                  <input v-model="tutorCourseName" placeholder="Kursname (optional)" class="tutor-input" @click.stop />
+                </div>
+                <div class="tutor-action-row">
+                  <button @click.stop="generateTutorQuiz" :disabled="tutorGenerating || tutorSelectedDocs.length === 0" class="tutor-generate-btn">
+                    {{ tutorGenerating ? '⏳ Wird generiert...' : '✦ Quiz generieren' }}
+                  </button>
+                  <button @click.stop="fetchTutorStats" class="tutor-stats-btn">📊 Statistiken</button>
+                </div>
+                <p v-if="tutorStatus" :class="['tutor-status', tutorStatus.type]">{{ tutorStatus.message }}</p>
+              </div>
+
+              <!-- STATS VIEW -->
+              <div v-if="tutorView === 'stats'">
+                <div class="tutor-view-header">
+                  <button @click.stop="tutorView = 'setup'" class="tutor-back-btn">← Zurück</button>
+                  <span class="tutor-view-title">Meine Statistiken</span>
+                </div>
+                <div v-if="tutorStatsLoading" class="tutor-empty">Lade Statistiken...</div>
+                <div v-else-if="tutorStats">
+                  <div class="tutor-stats-summary">
+                    <div class="tutor-stat-chip">
+                      <span class="tutor-stat-val">{{ tutorStats.total_attempts }}</span>
+                      <span class="tutor-stat-lbl">Versuche</span>
+                    </div>
+                    <div class="tutor-stat-chip">
+                      <span class="tutor-stat-val">{{ tutorStats.average_score }}%</span>
+                      <span class="tutor-stat-lbl">Ø Score</span>
+                    </div>
+                  </div>
+                  <div v-if="tutorStats.weak_questions.length > 0" class="tutor-stats-block">
+                    <p class="tutor-stats-heading">📉 Verbesserungspotenzial</p>
+                    <div v-for="q in tutorStats.weak_questions" :key="q.question_id" class="tutor-stats-item tutor-stats-weak">
+                      <span class="tutor-stats-rate">{{ q.success_rate }}%</span>
+                      <span class="tutor-stats-text">{{ q.question_text }}</span>
+                    </div>
+                  </div>
+                  <div v-if="tutorStats.strong_questions.length > 0" class="tutor-stats-block">
+                    <p class="tutor-stats-heading">📈 Du kannst das gut</p>
+                    <div v-for="q in tutorStats.strong_questions" :key="q.question_id" class="tutor-stats-item tutor-stats-strong">
+                      <span class="tutor-stats-rate">{{ q.success_rate }}%</span>
+                      <span class="tutor-stats-text">{{ q.question_text }}</span>
+                    </div>
+                  </div>
+                  <div v-if="tutorStats.weak_questions.length === 0 && tutorStats.strong_questions.length === 0" class="tutor-empty">
+                    Noch keine Daten. Mach zuerst ein Quiz!
+                  </div>
+                </div>
+              </div>
+
+              <!-- QUIZ VIEW -->
+              <div v-if="tutorView === 'quiz' && tutorQuiz">
+                <div class="tutor-quiz-header">
+                  <span class="tutor-quiz-title">{{ tutorQuiz.title }}</span>
+                  <span class="tutor-quiz-progress">{{ tutorCurrentQuestion + 1 }}&thinsp;/&thinsp;{{ tutorQuiz.questions.length }}</span>
+                </div>
+                <div class="tutor-progress-bar">
+                  <div class="tutor-progress-fill" :style="{ width: tutorProgressPct + '%' }"></div>
+                </div>
+                <div class="tutor-question-card" v-if="currentQuestion">
+                  <p class="tutor-question-text">{{ currentQuestion.question_text }}</p>
+                  <div v-if="currentQuestion.question_type === 'MC'" class="tutor-options">
+                    <button
+                      v-for="opt in currentQuestion.options" :key="opt"
+                      :class="['tutor-option', { 'tutor-option--selected': tutorAnswers[currentQuestion.id] === opt[0] }]"
+                      @click.stop="selectAnswer(currentQuestion.id, opt[0])"
+                    >
+                      <span class="tutor-opt-key">{{ opt[0] }}</span>
+                      <span class="tutor-opt-text">{{ opt.slice(3) }}</span>
+                    </button>
+                  </div>
+                  <div v-if="currentQuestion.question_type === 'TF'" class="tutor-tf-options">
+                    <button :class="['tutor-tf-btn', { 'tutor-tf-btn--selected': tutorAnswers[currentQuestion.id] === 'true' }]" @click.stop="selectAnswer(currentQuestion.id, 'true')">Wahr</button>
+                    <button :class="['tutor-tf-btn', { 'tutor-tf-btn--selected': tutorAnswers[currentQuestion.id] === 'false' }]" @click.stop="selectAnswer(currentQuestion.id, 'false')">Falsch</button>
+                  </div>
+                </div>
+                <div class="tutor-nav-row">
+                  <button @click.stop="tutorCurrentQuestion--" :disabled="tutorCurrentQuestion === 0" class="tutor-nav-btn">← Zurück</button>
+                  <button v-if="tutorCurrentQuestion < tutorQuiz.questions.length - 1" @click.stop="tutorCurrentQuestion++" class="tutor-nav-btn tutor-nav-btn--next">Weiter →</button>
+                  <button v-else @click.stop="submitTutorQuiz" :disabled="!tutorAllAnswered || tutorSubmitting" class="tutor-nav-btn tutor-nav-btn--submit">
+                    {{ tutorSubmitting ? '⏳' : '✓ Auswerten' }}
+                  </button>
+                </div>
+                <p v-if="!tutorAllAnswered" class="tutor-unanswered">{{ tutorUnansweredCount }} Frage(n) noch offen</p>
+              </div>
+
+              <!-- RESULTS VIEW -->
+              <div v-if="tutorView === 'results' && tutorResults">
+                <div :class="['tutor-score-badge', tutorScoreClass]">
+                  <span class="tutor-score-fraction">{{ tutorResults.score }}&thinsp;/&thinsp;{{ tutorResults.total_questions }}</span>
+                  <span class="tutor-score-pct">{{ tutorResults.percentage }}%</span>
+                </div>
+                <div class="tutor-result-list">
+                  <div
+                    v-for="ans in tutorResults.answers" :key="ans.question_id"
+                    :class="['tutor-result-item', ans.is_correct ? 'result-correct' : 'result-wrong']"
+                  >
+                    <div class="tutor-result-row">
+                      <span class="tutor-result-icon">{{ ans.is_correct ? '✓' : '✗' }}</span>
+                      <span class="tutor-result-q">{{ questionTextById(ans.question_id) }}</span>
+                    </div>
+                    <div v-if="!ans.is_correct" class="tutor-result-answer">
+                      Deine Antwort: <strong>{{ ans.given_answer }}</strong> · Richtig: <strong>{{ ans.correct_answer }}</strong>
+                    </div>
+                    <div v-if="ans.explanation" class="tutor-result-explanation">💡 {{ ans.explanation }}</div>
+                  </div>
+                </div>
+                <button @click.stop="resetTutorQuiz" class="tutor-restart-btn">Neues Quiz starten</button>
+              </div>
+
+            </div>
+
           </div>
         </div>
       </div>
@@ -306,6 +438,20 @@ export default {
       plannerSubmitting: false,
       plannerStatus: null,
       plannerForm: { title: '', course_name: '', type: 'EXAM', date: '', description: '' },
+      tutorView: 'setup',
+      tutorDocuments: [],
+      tutorSelectedDocs: [],
+      tutorNumQuestions: 10,
+      tutorCourseName: '',
+      tutorGenerating: false,
+      tutorSubmitting: false,
+      tutorStatus: null,
+      tutorQuiz: null,
+      tutorCurrentQuestion: 0,
+      tutorAnswers: {},
+      tutorResults: null,
+      tutorStats: null,
+      tutorStatsLoading: false,
       navItems: [
         {
           id: 'pruefungen',
@@ -323,7 +469,7 @@ export default {
           id: 'quiz',
           label: 'Quiz',
           icon: '🧠',
-          entries: ['SQL – 5 Fragen', 'Statistik Aufgaben']
+          entries: []
         },
         {
           id: 'career',
@@ -373,6 +519,29 @@ export default {
       const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
       return [...this.gradesData.courses].sort((a, b) => parse(a.grade) - parse(b.grade))
     },
+    currentQuestion() {
+      if (!this.tutorQuiz) return null
+      return this.tutorQuiz.questions[this.tutorCurrentQuestion] || null
+    },
+    tutorProgressPct() {
+      if (!this.tutorQuiz) return 0
+      return ((this.tutorCurrentQuestion + 1) / this.tutorQuiz.questions.length) * 100
+    },
+    tutorAllAnswered() {
+      if (!this.tutorQuiz) return false
+      return this.tutorQuiz.questions.every(q => this.tutorAnswers[q.id] !== undefined)
+    },
+    tutorUnansweredCount() {
+      if (!this.tutorQuiz) return 0
+      return this.tutorQuiz.questions.filter(q => this.tutorAnswers[q.id] === undefined).length
+    },
+    tutorScoreClass() {
+      if (!this.tutorResults) return ''
+      const pct = this.tutorResults.percentage
+      if (pct >= 80) return 'score-great'
+      if (pct >= 60) return 'score-ok'
+      return 'score-poor'
+    },
     visibleGroupedEvents() {
       const events = this.calendarShowAll
         ? this.filteredCalendarEvents
@@ -392,6 +561,7 @@ export default {
     this.isDark = localStorage.getItem('darkMode') === 'true'
     this.fetchCalendarEvents()
     this.fetchPlannerEvents()
+    this.fetchTutorDocuments()
   },
   methods: {
     toggleDark() {
@@ -636,6 +806,7 @@ export default {
         const res = await fetch('/api/upload', { method: 'POST', body: formData })
         if (res.ok) {
           this.uploadStatus = ''
+          this.fetchTutorDocuments()
           this.messages.push({
             role: 'assistant',
             content:
@@ -742,6 +913,95 @@ export default {
       return new Date(dateStr + 'T00:00:00').toLocaleDateString('de-DE', {
         day: '2-digit', month: '2-digit', year: 'numeric'
       })
+    },
+    async fetchTutorDocuments() {
+      try {
+        const res = await fetch('/api/documents')
+        if (res.ok) this.tutorDocuments = await res.json()
+      } catch { /* silent */ }
+    },
+    async generateTutorQuiz() {
+      if (this.tutorSelectedDocs.length === 0 || this.tutorGenerating) return
+      this.tutorGenerating = true
+      this.tutorStatus = { type: 'info', message: 'Quiz wird generiert, das dauert ca. 15 Sekunden...' }
+      try {
+        const res = await fetch('/api/tutor/quiz/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_documents: this.tutorSelectedDocs,
+            num_questions: this.tutorNumQuestions,
+            course_name: this.tutorCourseName.trim() || null,
+          })
+        })
+        if (res.ok) {
+          this.tutorQuiz = await res.json()
+          this.tutorAnswers = {}
+          this.tutorCurrentQuestion = 0
+          this.tutorStatus = null
+          this.tutorView = 'quiz'
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.tutorStatus = { type: 'error', message: data.detail || 'Fehler bei der Quiz-Generierung.' }
+        }
+      } catch {
+        this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.tutorGenerating = false
+      }
+    },
+    selectAnswer(questionId, answer) {
+      this.tutorAnswers = { ...this.tutorAnswers, [questionId]: answer }
+    },
+    async submitTutorQuiz() {
+      if (!this.tutorQuiz || !this.tutorAllAnswered || this.tutorSubmitting) return
+      this.tutorSubmitting = true
+      const answers = Object.entries(this.tutorAnswers).map(([question_id, given_answer]) => ({
+        question_id: parseInt(question_id),
+        given_answer,
+      }))
+      try {
+        const res = await fetch(`/api/tutor/quiz/${this.tutorQuiz.id}/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers })
+        })
+        if (res.ok) {
+          this.tutorResults = await res.json()
+          this.tutorView = 'results'
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.tutorStatus = { type: 'error', message: data.detail || 'Fehler beim Auswerten.' }
+        }
+      } catch {
+        this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.tutorSubmitting = false
+      }
+    },
+    async fetchTutorStats() {
+      this.tutorStatsLoading = true
+      this.tutorView = 'stats'
+      this.tutorStats = null
+      try {
+        const res = await fetch('/api/tutor/stats')
+        if (res.ok) this.tutorStats = await res.json()
+      } catch { /* silent */ } finally {
+        this.tutorStatsLoading = false
+      }
+    },
+    questionTextById(questionId) {
+      if (!this.tutorQuiz) return ''
+      const q = this.tutorQuiz.questions.find(q => q.id === questionId)
+      return q ? q.question_text : ''
+    },
+    resetTutorQuiz() {
+      this.tutorView = 'setup'
+      this.tutorQuiz = null
+      this.tutorResults = null
+      this.tutorAnswers = {}
+      this.tutorCurrentQuestion = 0
+      this.tutorStatus = null
     }
   }
 }
@@ -1693,4 +1953,388 @@ body {
 .pprio-urgent { background: #fee2e2; color: #dc2626; }
 .pprio-high   { background: #fef3c7; color: #d97706; }
 .pprio-normal { background: #dcfce7; color: #16a34a; }
+
+/* TUTOR */
+.tutor-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.tutor-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 6px;
+}
+
+.tutor-doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+
+.tutor-doc-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+  transition: background 0.15s;
+}
+
+.tutor-doc-item:hover { background: var(--surface-hover); }
+.tutor-doc-item input[type="checkbox"] { accent-color: var(--primary); flex-shrink: 0; }
+.tutor-doc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tutor-config { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+
+.tutor-slider-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tutor-slider-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.tutor-slider {
+  width: 100%;
+  accent-color: var(--primary);
+}
+
+.tutor-input {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.tutor-input:focus { border-color: var(--primary); }
+.tutor-input::placeholder { color: var(--text-muted); }
+
+.tutor-action-row { display: flex; gap: 6px; }
+
+.tutor-generate-btn {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tutor-generate-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.tutor-generate-btn:disabled { background: var(--border); cursor: default; }
+
+.tutor-stats-btn {
+  padding: 8px 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tutor-stats-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+.tutor-status { margin: 8px 0 0; font-size: 12px; text-align: center; }
+.tutor-status.success { color: #16a34a; }
+.tutor-status.error   { color: #dc2626; }
+.tutor-status.info    { color: var(--text-muted); }
+
+.tutor-empty {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+/* Stats view */
+.tutor-view-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.tutor-back-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tutor-back-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+.tutor-view-title { font-size: 13px; font-weight: 600; color: var(--text); }
+
+.tutor-stats-summary {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tutor-stat-chip {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.tutor-stat-val { font-size: 18px; font-weight: 700; color: var(--primary); }
+.tutor-stat-lbl { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+.tutor-stats-block { margin-bottom: 10px; }
+
+.tutor-stats-heading {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tutor-stats-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.tutor-stats-weak  { background: #fef2f2; color: #991b1b; }
+.tutor-stats-strong { background: #f0fdf4; color: #166534; }
+.dark .tutor-stats-weak   { background: #2d1515; color: #fca5a5; }
+.dark .tutor-stats-strong { background: #14231a; color: #86efac; }
+
+.tutor-stats-rate { font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+.tutor-stats-text { flex: 1; line-height: 1.4; }
+
+/* Quiz view */
+.tutor-quiz-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.tutor-quiz-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.tutor-quiz-progress { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+.tutor-progress-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.tutor-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.tutor-question-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--surface-hover);
+  margin-bottom: 12px;
+}
+
+.tutor-question-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.tutor-options { display: flex; flex-direction: column; gap: 6px; }
+
+.tutor-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  font-size: 12px;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.tutor-option:hover { border-color: var(--primary); background: var(--primary-dim); }
+.tutor-option--selected { border-color: var(--primary); background: var(--primary-dim); }
+
+.tutor-opt-key {
+  font-weight: 700;
+  color: var(--primary);
+  flex-shrink: 0;
+  width: 14px;
+}
+
+.tutor-opt-text { flex: 1; line-height: 1.4; }
+
+.tutor-tf-options { display: flex; gap: 8px; }
+
+.tutor-tf-btn {
+  flex: 1;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+
+.tutor-tf-btn:hover { border-color: var(--primary); background: var(--primary-dim); }
+.tutor-tf-btn--selected { border-color: var(--primary); background: var(--primary-dim); color: var(--primary); }
+
+.tutor-nav-row { display: flex; gap: 6px; }
+
+.tutor-nav-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+.tutor-nav-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.tutor-nav-btn:disabled { opacity: 0.4; cursor: default; }
+.tutor-nav-btn--next { margin-left: auto; }
+.tutor-nav-btn--submit { margin-left: auto; background: var(--primary); color: #fff; border-color: var(--primary); }
+.tutor-nav-btn--submit:hover:not(:disabled) { background: var(--primary-hover); }
+
+.tutor-unanswered { font-size: 11px; color: var(--text-muted); text-align: center; margin: 6px 0 0; }
+
+/* Results view */
+.tutor-score-badge {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.score-great { background: #f0fdf4; }
+.score-ok    { background: #fefce8; }
+.score-poor  { background: #fef2f2; }
+.dark .score-great { background: #14231a; }
+.dark .score-ok    { background: #1f1a09; }
+.dark .score-poor  { background: #2d1515; }
+
+.tutor-score-fraction { font-size: 24px; font-weight: 700; color: var(--text); }
+.tutor-score-pct { font-size: 16px; font-weight: 600; color: var(--text-muted); }
+
+.tutor-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.tutor-result-item {
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.result-correct { background: #f0fdf4; border: 1px solid #bbf7d0; }
+.result-wrong   { background: #fef2f2; border: 1px solid #fecaca; }
+.dark .result-correct { background: #14231a; border-color: #166534; }
+.dark .result-wrong   { background: #2d1515; border-color: #991b1b; }
+
+.tutor-result-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
+.tutor-result-icon { font-weight: 700; flex-shrink: 0; }
+.result-correct .tutor-result-icon { color: #16a34a; }
+.result-wrong   .tutor-result-icon { color: #dc2626; }
+.tutor-result-q { flex: 1; color: var(--text); line-height: 1.4; font-weight: 500; }
+
+.tutor-result-answer {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 2px 0;
+  padding-left: 18px;
+}
+
+.tutor-result-explanation {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  padding-left: 18px;
+  line-height: 1.4;
+}
+
+.tutor-restart-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tutor-restart-btn:hover { background: var(--primary-hover); }
 </style>

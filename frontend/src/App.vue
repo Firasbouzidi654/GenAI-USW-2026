@@ -163,6 +163,22 @@
               </div>
             </div>
 
+            <div v-if="item.id === 'pruefungen'" class="pruefungen-section">
+              <div v-if="upcomingExams.length === 0" class="pruefungen-empty">
+                Noch keine Prüfungen eingetragen.<br>
+                <span class="pruefungen-hint">Prüfungen im Planner-Tab mit Typ EXAM hinzufügen.</span>
+              </div>
+              <ul v-else class="pruefungen-list">
+                <li v-for="exam in upcomingExams" :key="exam.id" class="pruefungen-item">
+                  <span class="pruefungen-date">{{ formatPlannerDate(exam.date) }}</span>
+                  <span class="pruefungen-title">{{ exam.title }}</span>
+                  <span :class="['pruefungen-badge', 'pprio-' + exam.priority.toLowerCase()]">
+                    {{ exam.days_remaining === 0 ? 'Heute' : exam.days_remaining + 'd' }}
+                  </span>
+                </li>
+              </ul>
+            </div>
+
             <div v-if="item.id === 'planner'" class="planner-section" @click.stop>
               <form @submit.prevent="submitPlannerEvent" class="planner-form">
                 <input v-model="plannerForm.title" placeholder="Titel *" required class="planner-input" @click.stop />
@@ -295,7 +311,7 @@ export default {
           id: 'pruefungen',
           label: 'Prüfungen',
           icon: '📅',
-          entries: ['15.06 Datenbanken', '22.06 Statistik', '01.07 Programmierung']
+          entries: []
         },
         {
           id: 'lernplan',
@@ -337,6 +353,13 @@ export default {
     }
   },
   computed: {
+    upcomingExams() {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      return this.plannerEvents
+        .filter(e => e.type === 'EXAM' && new Date(e.date + 'T00:00:00') >= today)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
+    },
     filteredCalendarEvents() {
       const now = new Date()
       const q = this.calendarSearch.trim().toLowerCase()
@@ -1436,6 +1459,68 @@ body {
 .noten-grade {
   font-weight: 600;
   color: var(--primary);
+}
+
+/* PRUEFUNGEN */
+.pruefungen-section {
+  margin-top: 4px;
+}
+
+.pruefungen-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+  line-height: 1.6;
+}
+
+.pruefungen-hint {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.pruefungen-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pruefungen-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pruefungen-date {
+  font-weight: 600;
+  color: var(--primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pruefungen-title {
+  flex: 1;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pruefungen-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* PLANNER */

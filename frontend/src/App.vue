@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -163,6 +163,43 @@
               </div>
             </div>
 
+            <div v-if="item.id === 'planner'" class="planner-section" @click.stop>
+              <form @submit.prevent="submitPlannerEvent" class="planner-form">
+                <input v-model="plannerForm.title" placeholder="Titel *" required class="planner-input" @click.stop />
+                <input v-model="plannerForm.course_name" placeholder="Kursname *" required class="planner-input" @click.stop />
+                <select v-model="plannerForm.type" class="planner-input" @click.stop>
+                  <option value="EXAM">Prüfung (EXAM)</option>
+                  <option value="ASSIGNMENT">Abgabe (ASSIGNMENT)</option>
+                  <option value="PRESENTATION">Präsentation (PRESENTATION)</option>
+                </select>
+                <input type="date" v-model="plannerForm.date" required class="planner-input" @click.stop />
+                <input v-model="plannerForm.description" placeholder="Beschreibung (optional)" class="planner-input" @click.stop />
+                <button type="submit" :disabled="plannerSubmitting" class="planner-submit-btn">
+                  {{ plannerSubmitting ? '⏳ Speichern...' : '+ Event hinzufügen' }}
+                </button>
+              </form>
+              <p v-if="plannerStatus" :class="['planner-status', plannerStatus.type]">{{ plannerStatus.message }}</p>
+
+              <div v-if="plannerEvents.length === 0" class="planner-empty">Noch keine Events eingetragen.</div>
+              <div v-else class="planner-list">
+                <div v-for="event in plannerEvents" :key="event.id" class="planner-card">
+                  <div class="planner-card-header">
+                    <span class="planner-card-title">{{ event.title }}</span>
+                    <button @click.stop="deletePlannerEvent(event.id)" class="planner-delete-btn" title="Löschen">✕</button>
+                  </div>
+                  <div class="planner-card-meta">
+                    <span class="planner-course">{{ event.course_name }}</span>
+                    <span :class="['planner-type-badge', 'ptype-' + event.type.toLowerCase()]">{{ plannerTypeLabel(event.type) }}</span>
+                  </div>
+                  <div class="planner-card-footer">
+                    <span class="planner-date">📅 {{ formatPlannerDate(event.date) }}</span>
+                    <span class="planner-days">{{ event.days_remaining }} Tage verbleibend</span>
+                    <span :class="['planner-priority', 'pprio-' + event.priority.toLowerCase()]">{{ event.priority }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
@@ -248,6 +285,10 @@ export default {
       gradesLoading: false,
       gradesStatus: null,
       gradesData: null,
+      plannerEvents: [],
+      plannerSubmitting: false,
+      plannerStatus: null,
+      plannerForm: { title: '', course_name: '', type: 'EXAM', date: '', description: '' },
       navItems: [
         {
           id: 'pruefungen',
@@ -283,6 +324,12 @@ export default {
           id: 'noten',
           label: 'Noten',
           icon: '🎓',
+          entries: []
+        },
+        {
+          id: 'planner',
+          label: 'Planner',
+          icon: '📋',
           entries: []
         }
       ]
@@ -320,6 +367,7 @@ export default {
   mounted() {
     this.isDark = localStorage.getItem('darkMode') === 'true'
     this.fetchCalendarEvents()
+    this.fetchPlannerEvents()
   },
   methods: {
     toggleDark() {
@@ -394,10 +442,10 @@ export default {
       this.jobAgentLoading = true
       this.jobAgentStatus = null
       try {
-        const res = await fetch('/api/job-agent/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
+        const res = await fetch('/api/job-agent/run', { //F appeler B 
+          method: 'POST',//Je ne veux pas seulement lire des données.Je veux déclencher une action.
+          headers: { 'Content-Type': 'application/json' }, //BE : Je vais t'envoyer du JSON.
+          body: JSON.stringify({}) 
         })
         if (res.ok) {
           this.jobAgentStatus = { type: 'success', message: 'Job Search Agent launched!' }
@@ -453,6 +501,7 @@ export default {
       if (description.length > 0 && description.length < 60) return description.trim()
       return ''
     },
+    //send(file) not possible
     async uploadIcsFile(event) {
       const file = event.target.files[0]
       if (!file) return
@@ -550,6 +599,64 @@ export default {
       } finally {
         this.gradesLoading = false
       }
+    },
+    async fetchPlannerEvents() {
+      try {
+        const res = await fetch('/api/planner/events')
+        if (res.ok) this.plannerEvents = await res.json()
+      } catch {
+        // Backend nicht erreichbar beim Start — kein Fehler anzeigen
+      }
+    },
+    async submitPlannerEvent() {
+      if (!this.plannerForm.title.trim() || !this.plannerForm.course_name.trim() || !this.plannerForm.date) return
+      this.plannerSubmitting = true
+      this.plannerStatus = null
+      try {
+        const res = await fetch('/api/planner/events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: this.plannerForm.title.trim(),
+            course_name: this.plannerForm.course_name.trim(),
+            type: this.plannerForm.type,
+            date: this.plannerForm.date,
+            description: this.plannerForm.description.trim() || null,
+          })
+        })
+        if (res.ok) {
+          this.plannerStatus = { type: 'success', message: 'Event gespeichert!' }
+          this.plannerForm = { title: '', course_name: '', type: 'EXAM', date: '', description: '' }
+          await this.fetchPlannerEvents()
+          setTimeout(() => { this.plannerStatus = null }, 3000)
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.plannerStatus = { type: 'error', message: data.detail || 'Fehler beim Speichern.' }
+        }
+      } catch {
+        this.plannerStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.plannerSubmitting = false
+      }
+    },
+    async deletePlannerEvent(id) {
+      try {
+        const res = await fetch(`/api/planner/events/${id}`, { method: 'DELETE' })
+        if (res.ok || res.status === 204) {
+          this.plannerEvents = this.plannerEvents.filter(e => e.id !== id)
+        }
+      } catch {
+        // silent
+      }
+    },
+    plannerTypeLabel(type) {
+      const map = { EXAM: 'Prüfung', ASSIGNMENT: 'Abgabe', PRESENTATION: 'Präsentation' }
+      return map[type] || type
+    },
+    formatPlannerDate(dateStr) {
+      return new Date(dateStr + 'T00:00:00').toLocaleDateString('de-DE', {
+        day: '2-digit', month: '2-digit', year: 'numeric'
+      })
     }
   }
 }
@@ -1267,4 +1374,175 @@ body {
   font-weight: 600;
   color: var(--primary);
 }
+
+/* PLANNER */
+.planner-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.planner-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.planner-input {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.planner-input:focus { border-color: var(--primary); }
+.planner-input::placeholder { color: var(--text-muted); }
+
+.planner-submit-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  margin-top: 2px;
+}
+
+.planner-submit-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.planner-submit-btn:disabled { background: var(--border); cursor: default; }
+
+.planner-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
+.planner-status.success { color: #16a34a; }
+.planner-status.error   { color: #dc2626; }
+.planner-status.info    { color: var(--text-muted); }
+
+.planner-empty {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.planner-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.planner-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-hover);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.planner-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.planner-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planner-delete-btn {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.planner-delete-btn:hover { color: #dc2626; background: #fee2e2; }
+
+.planner-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.planner-course {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.planner-type-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ptype-exam         { background: #ede9fe; color: #7c3aed; }
+.ptype-assignment   { background: #fef3c7; color: #d97706; }
+.ptype-presentation { background: #dcfce7; color: #16a34a; }
+
+.planner-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.planner-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.planner-days {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.planner-priority {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.pprio-urgent { background: #fee2e2; color: #dc2626; }
+.pprio-high   { background: #fef3c7; color: #d97706; }
+.pprio-normal { background: #dcfce7; color: #16a34a; }
 </style>

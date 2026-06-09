@@ -237,9 +237,9 @@
     <!-- INPUT BAR -->
     <div class="input-bar">
       <div class="input-container">
-        <label class="upload-btn" title="PDF hochladen">
-          📎
-          <input type="file" accept=".pdf" @change="uploadFile" hidden />
+        <label :class="['upload-btn', { 'upload-btn--busy': uploading }]" :title="uploading ? 'Wird hochgeladen...' : 'PDF hochladen'">
+          {{ uploading ? '⏳' : '📎' }}
+          <input type="file" accept=".pdf" @change="uploadFile" :disabled="uploading" hidden />
         </label>
         <textarea
           v-model="prompt"
@@ -270,6 +270,7 @@ export default {
       prompt: '',
       messages: [],
       loading: false,
+      uploading: false,
       activePanel: null,
       uploadStatus: '',
       jobAgentLoading: false,
@@ -396,9 +397,16 @@ export default {
     // --- STUDY ADVISOR: keyword list that triggers the planner-aware AI ---
     isPlannerQuestion(text) {
       const keywords = [
+        // Planner / deadline keywords
         'focus', 'priority', 'deadline', 'study plan', 'this week', 'today',
         'exam', 'assignment', 'presentation', 'planner', 'urgent', 'schedule',
-        'what should i', 'am i at risk', 'risk', 'prepare', 'review'
+        'what should i', 'am i at risk', 'risk', 'prepare', 'review',
+        // Calendar / class keywords
+        'class', 'classes', 'lecture', 'course', 'kalender', 'calendar',
+        'tomorrow', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+        'saturday', 'sunday', 'timetable', 'time table', 'what time',
+        'when is', 'when do i', 'what do i have', 'show my', 'upcoming classes',
+        'my schedule', 'my classes', 'my lectures'
       ]
       const lower = text.toLowerCase()
       return keywords.some(kw => lower.includes(kw))
@@ -587,23 +595,40 @@ export default {
     },
     async uploadFile(event) {
       const file = event.target.files[0]
-      if (!file) return
+      if (!file || this.uploading) return
+      event.target.value = ''
+
+      if (file.type !== 'application/pdf') {
+        this.uploadStatus = 'Nur PDF-Dateien sind erlaubt.'
+        return
+      }
+
+      this.uploading = true
       this.uploadStatus = `"${file.name}" wird hochgeladen...`
+
       const formData = new FormData()
       formData.append('file', file)
+
       try {
         const res = await fetch('/api/upload', { method: 'POST', body: formData })
         if (res.ok) {
           this.uploadStatus = ''
-          this.messages.push({ role: 'assistant', content: `📄 **"${file.name}"** wurde hochgeladen und wird verarbeitet.` })
+          this.messages.push({
+            role: 'assistant',
+            content:
+              `✅ **"${file.name}"** wurde erfolgreich hochgeladen.\n\n` +
+              `Das Dokument wird im Hintergrund verarbeitet. Du kannst in wenigen Sekunden Fragen dazu stellen.`
+          })
           this.$nextTick(() => this.scrollToBottom())
         } else {
-          this.uploadStatus = 'Fehler beim Hochladen.'
+          const data = await res.json().catch(() => ({}))
+          this.uploadStatus = data.detail || 'Fehler beim Hochladen.'
         }
-      } catch (e) {
+      } catch {
         this.uploadStatus = 'Fehler: Backend nicht erreichbar.'
+      } finally {
+        this.uploading = false
       }
-      event.target.value = ''
     },
     selectGradesPdf(event) {
       const file = event.target.files[0]
@@ -1006,6 +1031,7 @@ body {
 }
 
 .upload-btn:hover { color: var(--primary); background: var(--surface-hover); }
+.upload-btn--busy { opacity: 0.5; cursor: default; pointer-events: none; }
 
 .input-container textarea {
   flex: 1;

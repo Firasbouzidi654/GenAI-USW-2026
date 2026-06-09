@@ -61,17 +61,11 @@ def _doc_id(filename: str, chunk_index: int, content: str) -> str:
     return f"{filename}::{chunk_index}::{digest}"
 
 
-async def process_document(file_path: str) -> None:
-    """Verarbeitet ein hochgeladenes PDF und legt seine Embeddings in ChromaDB ab.
+def process_document_sync(file_path: str) -> None:
+    """Synchronous pipeline — called by BackgroundTasks (runs in a thread pool).
 
-    Schritte:
-      1. Text aus PDF extrahieren (pypdf)
-      2. Text in Chunks aufteilen (LangChain RecursiveCharacterTextSplitter)
-      3. Embeddings via Gemini erzeugen
-      4. Chunks + Embeddings in ChromaDB speichern
-
-    Wirft bewusst keine Exceptions nach außen – die Upload-Route soll
-    erfolgreich antworten, auch wenn das Indexieren fehlschlägt.
+    Steps: extract text → chunk → embed via Gemini → upsert into ChromaDB.
+    Never raises; failures are logged so the upload response is never blocked.
     """
     path = Path(file_path)
     if not path.exists() or not path.is_file():
@@ -98,6 +92,7 @@ async def process_document(file_path: str) -> None:
 
     collection = get_collection()
     if collection is None:
+        logger.warning("ChromaDB nicht verfügbar — Dokument nicht indexiert.")
         return
 
     filename = path.name
@@ -112,5 +107,11 @@ async def process_document(file_path: str) -> None:
             metadatas=metadatas,
         )
         logger.info("Indexiert: %s (%d Chunks)", filename, len(chunks))
-    except Exception as exc:  # pragma: no cover - defensiv
+    except Exception as exc:
         logger.warning("Speichern in ChromaDB fehlgeschlagen: %s", exc)
+
+
+async def process_document(file_path: str) -> None:
+    """Async wrapper kept for backwards compatibility."""
+    import asyncio
+    await asyncio.to_thread(process_document_sync, file_path)

@@ -1,12 +1,12 @@
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.document import Document
-from app.rag.pipeline import process_document
+from app.rag.pipeline import process_document_sync
 
 UPLOAD_DIR = Path("uploads")
 
@@ -14,7 +14,11 @@ router = APIRouter()
 
 
 @router.post("/upload")
-async def upload_pdf(file: UploadFile, db: AsyncSession = Depends(get_db)):
+async def upload_pdf(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Nur PDF-Dateien erlaubt.")
 
@@ -31,12 +35,15 @@ async def upload_pdf(file: UploadFile, db: AsyncSession = Depends(get_db)):
     except Exception:
         raise HTTPException(status_code=500, detail="Datei konnte nicht gespeichert werden.")
 
-    await process_document(str(dest))
-
+    # Record in DB immediately so the UI gets a fast response.
     try:
         db.add(Document(filename=filename))
         await db.commit()
     except Exception:
         pass
+
+    # Embedding + ChromaDB indexing happens in a background thread —
+    # the HTTP response is returned to the browser right away.
+    background_tasks.add_task(process_document_sync, str(dest))
 
     return {"status": "ok", "filename": filename}

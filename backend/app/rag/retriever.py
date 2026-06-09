@@ -26,6 +26,7 @@ async def retrieve_context(
     query: str,
     source_filter: list[str] | None = None,
     n_results: int | None = None,
+    threshold: float | None = 0.4,
 ) -> str:
     """Sucht in ChromaDB die für ``query`` relevantesten Chunks und gibt sie als Text zurück.
 
@@ -41,6 +42,10 @@ async def retrieve_context(
             Ohne Angabe wird über alle Dokumente gesucht.
         n_results: Anzahl zurückgegebener Chunks. Überschreibt ``settings.rag_top_k``.
             Nützlich für Quiz-Generierung, die breiteren Dokumentkontext benötigt.
+        threshold: Cosine-Distance-Schwellenwert (0–2). Chunks mit Distanz >= threshold
+            werden verworfen. ``None`` deaktiviert die Filterung vollständig –
+            sinnvoll für Quiz-Generierung, wo alle Inhalte eines bestimmten
+            Dokuments relevant sind.
 
     Bei jedem Fehler (kein Chroma, kein Embedding, kein Treffer) wird ein
     leerer String zurückgegeben – die Prompt-Route fällt dann sauber auf
@@ -87,11 +92,15 @@ async def retrieve_context(
     metadatas = metadatas_batches[0] if metadatas_batches else []
     distances = distances_batches[0] if distances_batches else []
 
-    # Cosine distance: 0 = identical, ~0.46 = unrelated in practice.
-    # Only include chunks that are actually relevant to the query.
-    threshold = 0.4
-    if distances:
-        filtered = [(d, m) for d, m, dist in zip(documents, metadatas, distances) if dist < threshold]
+    # threshold=None means no distance filtering (used by quiz to retrieve all
+    # content from specified docs regardless of query relevance).
+    # threshold=0.4 (default) keeps only genuinely relevant chunks for chat Q&A.
+    if threshold is not None and distances:
+        filtered = [
+            (d, m)
+            for d, m, dist in zip(documents, metadatas, distances)
+            if dist < threshold
+        ]
         if not filtered:
             return ""
         documents, metadatas = zip(*filtered)

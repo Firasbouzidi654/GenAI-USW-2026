@@ -143,6 +143,7 @@ async def generate_quiz(
         _RAG_QUERY,
         source_filter=source_documents,
         n_results=_RAG_N_RESULTS,
+        threshold=None,  # retrieve all indexed content from specified docs
     )
     if not context:
         raise ValueError(

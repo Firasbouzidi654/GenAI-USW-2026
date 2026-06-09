@@ -361,9 +361,46 @@
       <div class="messages">
 
         <div v-if="messages.length === 0" class="welcome">
+          <div class="welcome-datetime">
+            <span class="welcome-date">{{ currentDateTimeStr.date }}</span>
+            <span class="welcome-time">{{ currentDateTimeStr.time }}</span>
+          </div>
           <div class="welcome-icon">✦</div>
           <h2>Wie kann ich dir helfen?</h2>
           <p>Stelle eine Frage oder lade ein Dokument hoch.</p>
+
+          <div class="welcome-suggestions">
+            <button
+              v-for="s in quickSuggestions"
+              :key="s"
+              class="suggestion-btn"
+              @click="suggestPrompt(s)"
+            >{{ s }}</button>
+          </div>
+
+          <div class="welcome-cards">
+            <div class="welcome-card">
+              <span class="welcome-card-icon">📋</span>
+              <div>
+                <div class="welcome-card-title">Planner-aware</div>
+                <div class="welcome-card-desc">Uses exams, assignments and presentations.</div>
+              </div>
+            </div>
+            <div class="welcome-card">
+              <span class="welcome-card-icon">📆</span>
+              <div>
+                <div class="welcome-card-title">Calendar-aware</div>
+                <div class="welcome-card-desc">Uses upcoming classes and events.</div>
+              </div>
+            </div>
+            <div class="welcome-card">
+              <span class="welcome-card-icon">🧠</span>
+              <div>
+                <div class="welcome-card-title">AI Study Advisor</div>
+                <div class="welcome-card-desc">Provides personalized study recommendations.</div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
@@ -418,6 +455,13 @@ export default {
       prompt: '',
       messages: [],
       loading: false,
+      currentTime: new Date(),
+      quickSuggestions: [
+        'What should I focus on this week?',
+        'Create a study plan based on my calendar.',
+        'What classes do I have this week?',
+        'I only have 3 hours today.',
+      ],
       uploading: false,
       activePanel: null,
       uploadStatus: '',
@@ -499,6 +543,18 @@ export default {
     }
   },
   computed: {
+    currentDateTimeStr() {
+      const d = this.currentTime
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+      const dd = String(d.getDate()).padStart(2, '0')
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const hh = String(d.getHours()).padStart(2, '0')
+      const min = String(d.getMinutes()).padStart(2, '0')
+      return {
+        date: `${days[d.getDay()]}, ${dd}.${mm}.${d.getFullYear()}`,
+        time: `${hh}:${min}`,
+      }
+    },
     upcomingExams() {
       const today = new Date()
       today.setHours(0, 0, 0, 0)
@@ -562,6 +618,10 @@ export default {
     this.fetchCalendarEvents()
     this.fetchPlannerEvents()
     this.fetchTutorDocuments()
+    this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
+  },
+  beforeUnmount() {
+    clearInterval(this._clockTimer)
   },
   methods: {
     toggleDark() {
@@ -605,6 +665,14 @@ export default {
       return keywords.some(kw => lower.includes(kw))
     },
     // --- END STUDY ADVISOR keyword detection ---
+
+    suggestPrompt(text) {
+      this.prompt = text
+      this.$nextTick(() => {
+        this.resizeTextarea()
+        this.sendPrompt()
+      })
+    },
 
     async sendPrompt() {
       if (!this.prompt.trim() || this.loading) return
@@ -1198,6 +1266,94 @@ body {
 }
 
 .welcome p { margin: 0; font-size: 14px; }
+
+/* Date / time badge */
+.welcome-datetime {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 18px;
+  gap: 2px;
+}
+.welcome-date {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.welcome-time {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+/* Quick suggestion buttons */
+.welcome-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 20px;
+  max-width: 560px;
+}
+.suggestion-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 7px 15px;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.suggestion-btn:hover {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* Info cards */
+.welcome-cards {
+  display: flex;
+  gap: 10px;
+  margin-top: 24px;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 600px;
+}
+.welcome-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  flex: 1;
+  min-width: 150px;
+  max-width: 180px;
+}
+.welcome-card-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+.welcome-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+.welcome-card-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+@media (max-width: 520px) {
+  .welcome-suggestions { flex-direction: column; align-items: stretch; }
+  .suggestion-btn { white-space: normal; text-align: left; }
+  .welcome-cards { flex-direction: column; align-items: center; }
+  .welcome-card { max-width: 100%; width: 100%; }
+}
 
 .message { display: flex; }
 .message.user { justify-content: flex-end; }

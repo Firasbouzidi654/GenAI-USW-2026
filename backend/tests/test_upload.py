@@ -1,10 +1,10 @@
 import io
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 
 def test_upload_valid_pdf(client, tmp_path):
     with patch("app.api.v1.upload.UPLOAD_DIR", tmp_path), \
-         patch("app.api.v1.upload.process_document", new_callable=AsyncMock):
+         patch("app.api.v1.upload.process_document_sync", new_callable=MagicMock):
         response = client.post(
             "/api/upload",
             files={"file": ("lecture.pdf", io.BytesIO(b"%PDF-1.4 test content"), "application/pdf")},
@@ -23,7 +23,7 @@ def test_upload_non_pdf_rejected(client):
 
 def test_upload_calls_process_document(client, tmp_path):
     with patch("app.api.v1.upload.UPLOAD_DIR", tmp_path), \
-         patch("app.api.v1.upload.process_document", new_callable=AsyncMock) as mock_pipeline:
+         patch("app.api.v1.upload.process_document_sync", new_callable=MagicMock) as mock_pipeline:
         client.post(
             "/api/upload",
             files={"file": ("lecture.pdf", io.BytesIO(b"%PDF-1.4 test content"), "application/pdf")},

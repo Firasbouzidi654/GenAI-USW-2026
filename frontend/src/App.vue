@@ -365,6 +365,7 @@
             <span class="welcome-date">{{ currentDateTimeStr.date }}</span>
             <span class="welcome-time">{{ currentDateTimeStr.time }}</span>
           </div>
+
           <div class="welcome-icon">✦</div>
           <h2>Wie kann ich dir helfen?</h2>
           <p>Stelle eine Frage oder lade ein Dokument hoch.</p>
@@ -398,6 +399,22 @@
               <div>
                 <div class="welcome-card-title">AI Study Advisor</div>
                 <div class="welcome-card-desc">Provides personalized study recommendations.</div>
+              </div>
+            </div>
+            <div
+              :class="['welcome-card', 'welcome-card--next-class', { 'welcome-card--clickable': nextClass }]"
+              @click="nextClass && togglePanel('kalender')"
+            >
+              <span class="welcome-card-icon">🏫</span>
+              <div class="next-class-body">
+                <div class="welcome-card-title">Next Class</div>
+                <template v-if="nextClass">
+                  <div class="next-class-course" :title="nextClass.title">{{ extractCourseName(nextClass.title) }}</div>
+                  <div class="next-class-meta">📅 {{ nextClassRelativeDate(nextClass.start_time) }}</div>
+                  <div class="next-class-meta">🕐 {{ formatTime(nextClass.start_time) }} – {{ formatTime(nextClass.end_time) }}</div>
+                  <div v-if="nextClass.location" class="next-class-meta">📍 {{ extractRoom(nextClass.location) }}</div>
+                </template>
+                <div v-else class="next-class-meta">No upcoming classes found.</div>
               </div>
             </div>
           </div>
@@ -554,6 +571,13 @@ export default {
         date: `${days[d.getDay()]}, ${dd}.${mm}.${d.getFullYear()}`,
         time: `${hh}:${min}`,
       }
+    },
+    nextClass() {
+      // Reactive: re-evaluates every minute when currentTime ticks.
+      // Reads from calendarEvents already loaded by fetchCalendarEvents().
+      return this.calendarEvents
+        .filter(e => new Date(e.start_time) > this.currentTime)
+        .sort((a, b) => new Date(a.start_time) - new Date(b.start_time))[0] || null
     },
     upcomingExams() {
       const today = new Date()
@@ -778,6 +802,19 @@ export default {
     formatTime(isoString) {
       return new Date(isoString).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
     },
+    nextClassRelativeDate(isoString) {
+      const eventDay = new Date(isoString)
+      eventDay.setHours(0, 0, 0, 0)
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const diff = Math.round((eventDay - today) / 86400000)
+      if (diff === 0) return 'Today'
+      if (diff === 1) return 'Tomorrow'
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+      if (diff <= 6) return days[new Date(isoString).getDay()]
+      const d = new Date(isoString)
+      return `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`
+    },
     formatDateHeader(isoString) {
       const d = new Date(isoString)
       const today = new Date()
@@ -795,6 +832,30 @@ export default {
     parseCourseName(title) {
       if (!title) return title
       return title.replace(/\s*\b(PCÜ|SL|VL|UEb|UE|Ü|PR|SE|GK|TU|VO|KO|BS|EX)\s*$/i, '').trim()
+    },
+    // Strip course ID, module code, parenthesised annotations, and event-type suffix
+    extractCourseName(title) {
+      if (!title) return ''
+      return title
+        .replace(/^\s*\d{5,}\s*/, '')                                              // leading course ID e.g. 6123612
+        .replace(/^\s*[A-Z]{1,4}\d+(?:\.\d+)?\s*/i, '')                           // module code e.g. B5.2, IN4.3
+        .replace(/\s*\([^)]*\)/g, '')                                              // anything in (brackets): (PCÜ), (Schleinitz)
+        .replace(/\s*\b(PCÜ|SL|VL|UEb|UE|Ü|PR|SE|GK|TU|VO|KO|BS|EX)\s*$/i, '') // bare event type at end
+        .trim()
+    },
+    // Extract just the room identifier from a full location string
+    extractRoom(location) {
+      if (!location) return ''
+      const s = location.trim()
+      // Single letter + optional space + number at the end, e.g. "A 143", "A1.34"
+      const m = s.match(/\b([A-Z]\.?\s*\d+[\w.]*)\s*$/i)
+      if (m) return m[1].trim()
+      // Plain number at the end
+      const n = s.match(/\b(\d+[\w.]*)\s*$/)
+      if (n) return n[1]
+      // Fallback: last two tokens if string is long, else original
+      const parts = s.split(/\s+/)
+      return parts.length > 2 ? parts.slice(-2).join(' ') : s
     },
     eventTypeClass(title) {
       const map = { SL: 'etype-sl', PCÜ: 'etype-pcu', VL: 'etype-vl', UE: 'etype-ue', Ü: 'etype-ue', UEB: 'etype-ue', PR: 'etype-pr', SE: 'etype-se' }
@@ -1149,7 +1210,7 @@ body {
 
 .nav-logo {
   font-weight: 700;
-  font-size: 15px;
+  font-size: 17px;
   color: var(--primary);
   margin-right: 12px;
   white-space: nowrap;
@@ -1166,9 +1227,9 @@ body {
 .nav-btn {
   background: none;
   border: none;
-  padding: 5px 11px;
+  padding: 6px 12px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 15px;
   color: var(--text-muted);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -1293,7 +1354,7 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: center;
-  margin-top: 20px;
+  margin: 20px auto 0;
   max-width: 560px;
 }
 .suggestion-btn {
@@ -1313,14 +1374,15 @@ body {
   color: var(--primary);
 }
 
-/* Info cards */
+/* Info cards (4-card row) */
 .welcome-cards {
   display: flex;
   gap: 10px;
-  margin-top: 24px;
+  margin: 24px auto 0;
   justify-content: center;
   flex-wrap: wrap;
-  max-width: 600px;
+  max-width: 840px;
+  width: 100%;
 }
 .welcome-card {
   display: flex;
@@ -1331,29 +1393,81 @@ body {
   border-radius: 10px;
   padding: 12px 14px;
   text-align: left;
-  flex: 1;
-  min-width: 150px;
-  max-width: 180px;
+  flex: 1 1 160px;
+  max-width: 200px;
+}
+.welcome-card--clickable {
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.18s, transform 0.15s;
+}
+.welcome-card--clickable:hover {
+  background: var(--surface-hover);
+  border-color: var(--primary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.10);
+  transform: translateY(-2px);
+}
+.dark .welcome-card--clickable:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 .welcome-card-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
 .welcome-card-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
 .welcome-card-desc {
   font-size: 11px;
   color: var(--text-muted);
   line-height: 1.45;
+  margin-bottom: 2px;
+}
+.welcome-card-desc:last-child { margin-bottom: 0; }
+
+/* Next Class card — body constrained; icon stays top-aligned like other cards */
+.welcome-card--next-class { align-items: flex-start; }
+
+/* min-width:0 is the key flex rule that allows shrinking below content size */
+.next-class-body {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
 }
 
-@media (max-width: 520px) {
+/* Next Class card inner text */
+.next-class-course {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.35;
+  margin-bottom: 6px;
+  max-width: 100%;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.next-class-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin-bottom: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.next-class-meta:last-child { margin-bottom: 0; }
+
+/* 2 columns on medium screens */
+@media (max-width: 660px) {
+  .welcome-card { flex: 1 1 calc(50% - 5px); max-width: calc(50% - 5px); }
+}
+/* 1 column on small screens */
+@media (max-width: 420px) {
   .welcome-suggestions { flex-direction: column; align-items: stretch; }
   .suggestion-btn { white-space: normal; text-align: left; }
-  .welcome-cards { flex-direction: column; align-items: center; }
-  .welcome-card { max-width: 100%; width: 100%; }
+  .welcome-card { flex: 1 1 100%; max-width: 100%; }
 }
+
 
 .message { display: flex; }
 .message.user { justify-content: flex-end; }

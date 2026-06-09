@@ -22,13 +22,25 @@ def _format_context(documents: list[str], metadatas: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-async def retrieve_context(query: str) -> str:
+async def retrieve_context(
+    query: str,
+    source_filter: list[str] | None = None,
+    n_results: int | None = None,
+) -> str:
     """Sucht in ChromaDB die für ``query`` relevantesten Chunks und gibt sie als Text zurück.
 
     Schritte:
       1. Query embedden (Gemini)
-      2. Top-K Chunks in ChromaDB suchen
+      2. Top-K Chunks in ChromaDB suchen (optional gefiltert nach Dokumentnamen)
       3. Treffer zu einem einzigen Kontext-String zusammenfügen
+
+    Args:
+        query: Die Suchanfrage.
+        source_filter: Optionale Liste von Dateinamen (``source``-Metadatenfeld).
+            Bei einer Datei wird ``$eq``, bei mehreren ``$in`` verwendet.
+            Ohne Angabe wird über alle Dokumente gesucht.
+        n_results: Anzahl zurückgegebener Chunks. Überschreibt ``settings.rag_top_k``.
+            Nützlich für Quiz-Generierung, die breiteren Dokumentkontext benötigt.
 
     Bei jedem Fehler (kein Chroma, kein Embedding, kein Treffer) wird ein
     leerer String zurückgegeben – die Prompt-Route fällt dann sauber auf
@@ -45,12 +57,22 @@ async def retrieve_context(query: str) -> str:
     if not embeddings:
         return ""
 
+    where: dict | None = None
+    if source_filter:
+        if len(source_filter) == 1:
+            where = {"source": {"$eq": source_filter[0]}}
+        else:
+            where = {"source": {"$in": source_filter}}
+
     try:
-        result = collection.query(
-            query_embeddings=embeddings,
-            n_results=settings.rag_top_k,
-            include=["documents", "metadatas", "distances"],
-        )
+        query_kwargs: dict = {
+            "query_embeddings": embeddings,
+            "n_results": n_results if n_results is not None else settings.rag_top_k,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where is not None:
+            query_kwargs["where"] = where
+        result = collection.query(**query_kwargs)
     except Exception as exc:
         logger.warning("Chroma-Query fehlgeschlagen: %s", exc)
         return ""

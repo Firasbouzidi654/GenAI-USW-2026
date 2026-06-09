@@ -393,6 +393,18 @@ export default {
       const el = this.$refs.chatArea
       if (el) el.scrollTop = el.scrollHeight
     },
+    // --- STUDY ADVISOR: keyword list that triggers the planner-aware AI ---
+    isPlannerQuestion(text) {
+      const keywords = [
+        'focus', 'priority', 'deadline', 'study plan', 'this week', 'today',
+        'exam', 'assignment', 'presentation', 'planner', 'urgent', 'schedule',
+        'what should i', 'am i at risk', 'risk', 'prepare', 'review'
+      ]
+      const lower = text.toLowerCase()
+      return keywords.some(kw => lower.includes(kw))
+    },
+    // --- END STUDY ADVISOR keyword detection ---
+
     async sendPrompt() {
       if (!this.prompt.trim() || this.loading) return
 
@@ -407,6 +419,31 @@ export default {
       await this.$nextTick()
       this.scrollToBottom()
 
+      // --- STUDY ADVISOR: route planner-related questions to the Study Advisor ---
+      if (this.isPlannerQuestion(userPrompt)) {
+        try {
+          const res = await fetch('/api/ai/study-advisor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: userPrompt })
+          })
+          if (res.ok) {
+            const data = await res.json()
+            this.messages[this.messages.length - 1].content = data.answer
+          } else {
+            this.messages[this.messages.length - 1].content =
+              'The Study Advisor could not process your request. Please try again.'
+          }
+        } catch {
+          this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
+        } finally {
+          this.loading = false
+        }
+        return
+      }
+      // --- END STUDY ADVISOR routing ---
+
+      // Existing streaming chat for all non-planner questions
       try {
         const res = await fetch('/api/prompt', {
           method: 'POST',

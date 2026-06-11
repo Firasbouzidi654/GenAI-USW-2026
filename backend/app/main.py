@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import calendar, exams, grades, history, job_agent, planner, prompt, study_advisor, tutor, upload
+from app.api.v1 import calendar, exams, grades, history, job_agent, moodle_mock, planner, prompt, study_advisor, tutor, upload
 from app.core.database import Base, engine
 import app.models
 
@@ -27,6 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(moodle_mock.router, prefix="/api")
 app.include_router(prompt.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 app.include_router(history.router, prefix="/api")

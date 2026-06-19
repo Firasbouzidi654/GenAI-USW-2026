@@ -4,6 +4,7 @@ from app.models.calendar_event import CalendarEvent
 from app.models.chat import ChatMessage
 from app.models.document import Document
 from app.models.exam import Exam
+from app.models.focus_session import FocusSession
 from app.models.grade import Grade
 from app.models.language_progress import LanguageProgress
 from app.models.quiz import Quiz
@@ -19,6 +20,7 @@ __all__ = [
     "ChatMessage",
     "Document",
     "Exam",
+    "FocusSession",
     "Grade",
     "LanguageProgress",
     "Quiz",

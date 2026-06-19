@@ -3,8 +3,9 @@
 cd backend
 docker compose up -d
 
----- still BE :
-cd backend
+
+### 1. Backend 
+``` bash :
 uvicorn app.main:app --reload --port 8080
 
 

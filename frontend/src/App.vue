@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'sprachtutor' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'sprachtutor' || item.id === 'career' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -28,6 +28,163 @@
               <p v-if="jobAgentStatus" :class="['job-agent-status', jobAgentStatus.type]">
                 {{ jobAgentStatus.message }}
               </p>
+            </div>
+
+            <div v-if="item.id === 'career'" class="career-section">
+              <div class="career-toolbar">
+                <span class="career-toolbar-title">Career Profile</span>
+                <button
+                  @click.stop="fetchCareerAnalysis"
+                  :disabled="careerLoading"
+                  class="kalender-clear-btn"
+                  title="Neu berechnen"
+                >🔄</button>
+              </div>
+
+              <div class="career-scroll">
+              <div v-if="careerLoading" class="career-empty">🤖 AI is analyzing your academic profile...</div>
+              <div v-else-if="careerError" class="career-empty">{{ careerError }}</div>
+              <div v-else-if="!careerAnalysis || !careerAnalysis.has_data" class="career-empty">
+                Upload your Noten PDF first to get a personalized career analysis.
+              </div>
+              <template v-else>
+                <span class="career-source-badge">✨ AI Analysis</span>
+
+                <p v-if="careerAnalysis.summary" class="career-summary-text">{{ careerAnalysis.summary }}</p>
+
+                <div v-if="bestCareerMatch" class="career-spotlight">
+                  <p class="career-roles-title">🏆 Best Career Match</p>
+                  <div class="career-spotlight-card">
+                    <div class="career-spotlight-header">
+                      <span class="career-spotlight-title">🥇 {{ bestCareerMatch.title }}</span>
+                      <span class="career-spotlight-match">{{ bestCareerMatch.match_percent }}% Match</span>
+                    </div>
+                    <p class="career-spotlight-reason">{{ bestCareerMatch.reason }}</p>
+
+                    <div class="career-spotlight-row">
+                      <span class="career-spotlight-row-label">💼 Average Salary (Germany)</span>
+                      <span class="career-spotlight-row-value">{{ bestCareerMatch.salary_range_eur || 'Not available' }}</span>
+                    </div>
+                    <div class="career-spotlight-row">
+                      <span class="career-spotlight-row-label">📈 Market Demand</span>
+                      <span class="career-spotlight-row-value">{{ marketDemandStars(bestCareerMatch.market_demand) }} {{ bestCareerMatch.market_demand }}</span>
+                    </div>
+
+                    <div v-if="bestCareerMatch.missing_skills.length" class="career-spotlight-block">
+                      <span class="career-spotlight-block-label">❌ Missing Skills</span>
+                      <ul class="career-role-tag-list">
+                        <li v-for="(skill, mi) in bestCareerMatch.missing_skills" :key="mi">{{ skillIcon(skill) }} {{ skill }}</li>
+                      </ul>
+                    </div>
+
+                    <div v-if="bestCareerMatch.recommended_certifications.length" class="career-spotlight-block">
+                      <span class="career-spotlight-block-label">🎓 Recommended Certifications</span>
+                      <ul class="career-role-list">
+                        <li v-for="(cert, ci) in bestCareerMatch.recommended_certifications" :key="ci">{{ cert }}</li>
+                      </ul>
+                    </div>
+
+                    <div v-if="bestCareerMatch.recommended_projects.length" class="career-spotlight-block">
+                      <span class="career-spotlight-block-label">🚀 Recommended Portfolio Projects</span>
+                      <ul class="career-role-list">
+                        <li v-for="(proj, pi) in bestCareerMatch.recommended_projects" :key="pi">{{ proj }}</li>
+                      </ul>
+                    </div>
+
+                    <p class="career-disclaimer">🤖 AI-generated estimate based on your transcript — not a guaranteed fact.</p>
+                  </div>
+                </div>
+
+                <div class="career-metrics">
+                  <div class="career-metric-card">
+                    <span class="career-metric-label">🎯 Job Fit</span>
+                    <span class="career-metric-value">{{ careerAnalysis.job_fit_percent }}%</span>
+                  </div>
+                  <div class="career-metric-card">
+                    <span class="career-metric-label">🤖 AI Confidence</span>
+                    <span class="career-metric-value">{{ careerAnalysis.confidence_percent }}%</span>
+                  </div>
+                </div>
+
+                <div class="career-skills">
+                  <div v-for="skill in careerAnalysis.skills" :key="skill.name" class="career-skill-block">
+                    <div class="career-skill-header">
+                      <span class="career-skill-name">{{ skill.name }}</span>
+                      <span class="career-skill-percent">{{ skill.percent }}%</span>
+                    </div>
+                    <div class="career-skill-bar">
+                      <div class="career-skill-bar-fill" :style="{ width: (careerBarsAnimated ? skill.percent : 0) + '%' }"></div>
+                    </div>
+                    <p class="career-skill-reason">{{ skill.reason }}</p>
+                    <div v-if="skill.matched_courses.length" class="career-skill-courses">
+                      <span class="career-skill-courses-label">Based on:</span>
+                      <ul>
+                        <li v-for="(c, ci) in skill.matched_courses" :key="ci">
+                          ✓ {{ c.course_name }}<span v-if="c.grade"> ({{ c.grade }})</span>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="careerAnalysis.strengths.length || careerAnalysis.weak_areas.length" class="career-summary">
+                  <p v-if="careerAnalysis.strengths.length" class="career-summary-line">
+                    <strong>💪 Strengths:</strong> {{ careerAnalysis.strengths.join(', ') }}
+                  </p>
+                  <p v-if="careerAnalysis.weak_areas.length" class="career-summary-line">
+                    <strong>📉 Weak areas:</strong> {{ careerAnalysis.weak_areas.join(', ') }}
+                  </p>
+                </div>
+
+                <div class="career-roles">
+                  <p class="career-roles-title">Empfohlene Rollen</p>
+                  <p class="career-disclaimer">
+                    🤖 AI-generated recommendations based on your transcript — not guaranteed facts. Verify certifications and requirements before relying on them.
+                  </p>
+                  <div v-for="role in careerAnalysis.roles" :key="role.title" class="career-role-card">
+                    <div class="career-role-header">
+                      <span class="career-role-title">{{ role.title }}</span>
+                      <span class="career-role-match">{{ role.match_percent }}% Match</span>
+                    </div>
+                    <div class="career-role-demand">
+                      <span class="career-role-demand-label">Market Demand</span>
+                      <span :class="['career-demand-badge', 'career-demand-' + role.market_demand.toLowerCase().replace(' ', '-')]">
+                        {{ marketDemandIcon(role.market_demand) }} {{ role.market_demand }}
+                      </span>
+                    </div>
+                    <p class="career-role-reason">{{ role.reason }}</p>
+
+                    <div v-if="role.missing_skills.length" class="career-role-block">
+                      <span class="career-role-block-label">🧩 Missing Skills</span>
+                      <ul class="career-role-tag-list">
+                        <li v-for="(skill, mi) in role.missing_skills" :key="mi">{{ skill }}</li>
+                      </ul>
+                    </div>
+
+                    <div v-if="role.recommended_certifications.length" class="career-role-block">
+                      <span class="career-role-block-label">🎓 Recommended Certifications</span>
+                      <ul class="career-role-list">
+                        <li v-for="(cert, ci) in role.recommended_certifications" :key="ci">{{ cert }}</li>
+                      </ul>
+                    </div>
+
+                    <div v-if="role.recommended_projects.length" class="career-role-block">
+                      <span class="career-role-block-label">🛠️ Recommended Projects</span>
+                      <ul class="career-role-list">
+                        <li v-for="(proj, pi) in role.recommended_projects" :key="pi">{{ proj }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="careerAnalysis.recommended_learning_path.length" class="career-learning-path">
+                  <p class="career-roles-title">📚 Recommended Learning Path</p>
+                  <ul>
+                    <li v-for="(step, si) in careerAnalysis.recommended_learning_path" :key="si">{{ step }}</li>
+                  </ul>
+                </div>
+              </template>
+              </div>
             </div>
 
             <div v-if="item.id === 'kalender'" class="kalender-section">
@@ -603,6 +760,10 @@ export default {
       ],
       jobAgentLoading: false,
       jobAgentStatus: null,
+      careerAnalysis: null,
+      careerLoading: false,
+      careerError: null,
+      careerBarsAnimated: false,
       isDark: false,
       calendarEvents: [],
       icsUploadStatus: null,
@@ -650,12 +811,6 @@ export default {
           entries: []
         },
         {
-          id: 'lernplan',
-          label: 'Lernplan',
-          icon: '📚',
-          entries: ['SQL Basics', 'JOINs üben', 'Statistik wiederholen']
-        },
-        {
           id: 'quiz',
           label: 'Quiz',
           icon: '🧠',
@@ -665,7 +820,7 @@ export default {
           id: 'career',
           label: 'Career',
           icon: '💼',
-          entries: ['SQL: ⭐⭐☆☆☆', 'Python: ⭐⭐⭐☆☆', 'Power BI: ⭐☆☆☆☆', 'Job Fit: 62%']
+          entries: []
         },
         {
           id: 'kalender',
@@ -738,6 +893,9 @@ export default {
       const map = { English: 'en-US', German: 'de-DE', French: 'fr-FR', Spanish: 'es-ES', Italian: 'it-IT' }
       return map[this.langTutorLanguage] || 'en-US'
     },
+    bestCareerMatch() {
+      return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
+    },
     langTutorXpBarPct() {
       return this.langTutorProgress.xp % 100
     },
@@ -786,6 +944,7 @@ export default {
     this.fetchTutorDocuments()
     this.fetchGrades()
     this.fetchLangTutorProgress()
+    this.fetchCareerAnalysis()
     this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
@@ -1279,6 +1438,7 @@ export default {
           this.gradesStatus = this.gradesData.courses.length > 0
             ? { type: 'success', message: `${this.gradesData.courses.length} Kurse extrahiert und gespeichert.` }
             : { type: 'info', message: 'Keine Noten im Dokument gefunden.' }
+          this.fetchCareerAnalysis()
         } else {
           const data = await res.json().catch(() => ({}))
           this.gradesStatus = { type: 'error', message: data.detail || 'Fehler bei der Extraktion.' }
@@ -1310,6 +1470,7 @@ export default {
           this.gradesFile = null
           this.gradesFileName = ''
           this.gradesStatus = { type: 'success', message: 'Noten gelöscht.' }
+          this.fetchCareerAnalysis()
         } else {
           this.gradesStatus = { type: 'error', message: 'Fehler beim Löschen.' }
         }
@@ -1319,6 +1480,58 @@ export default {
         this.gradesClearing = false
       }
     },
+
+    // --- CAREER PROFILE ---
+    async fetchCareerAnalysis() {
+      this.careerLoading = true
+      this.careerError = null
+      this.careerBarsAnimated = false
+      try {
+        const res = await fetch('/api/career/analysis')
+        if (res.ok) {
+          this.careerAnalysis = await res.json()
+          // Render bars at 0% first, then flip to their real width on the next
+          // frame so the CSS width transition actually has a "from" state to animate.
+          await this.$nextTick()
+          requestAnimationFrame(() => { this.careerBarsAnimated = true })
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.careerError = data.detail || 'Career-Analyse konnte nicht geladen werden.'
+        }
+      } catch {
+        this.careerError = 'Backend nicht erreichbar.'
+      } finally {
+        this.careerLoading = false
+      }
+    },
+    marketDemandIcon(level) {
+      const map = { 'Very High': '🟢', 'High': '🟡', 'Medium': '🟠', 'Low': '🔴' }
+      return map[level] || '🟠'
+    },
+    marketDemandStars(level) {
+      const map = { 'Very High': 5, 'High': 4, 'Medium': 3, 'Low': 2 }
+      const filled = map[level] || 3
+      return '★'.repeat(filled) + '☆'.repeat(5 - filled)
+    },
+    skillIcon(name) {
+      const n = (name || '').toLowerCase()
+      if (n.includes('azure')) return '☁️'
+      if (n.includes('aws') || n.includes('amazon')) return '☁️'
+      if (n.includes('gcp') || n.includes('google cloud') || n.includes('cloud')) return '☁️'
+      if (n.includes('docker')) return '🐳'
+      if (n.includes('kubernetes') || n.includes('k8s')) return '☸️'
+      if (n.includes('spark')) return '⚡'
+      if (n.includes('kafka')) return '📨'
+      if (n.includes('power bi') || n.includes('tableau') || n.includes('dashboard') || n.includes('visualization')) return '📊'
+      if (n.includes('etl') || n.includes('pipeline')) return '🔄'
+      if (n.includes('linux')) return '🐧'
+      if (n.includes('git')) return '🌿'
+      if (n.includes('sql')) return '🗄️'
+      if (n.includes('python')) return '🐍'
+      if (n.includes('ci/cd') || n.includes('devops')) return '🔁'
+      return '🧩'
+    },
+    // --- END CAREER PROFILE ---
 
     // --- AI LANGUAGE TUTOR ---
     selectLangTutorLanguage(lang) {
@@ -2185,6 +2398,220 @@ body {
 
 .job-agent-status.success { color: #16a34a; }
 .job-agent-status.error { color: #dc2626; }
+
+/* CAREER */
+.career-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.career-toolbar { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.career-toolbar-title { font-size: 13px; font-weight: 600; color: var(--text); }
+
+.career-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: min(65vh, 560px);
+  padding-right: 6px;
+  margin-right: -6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.career-scroll::-webkit-scrollbar { width: 8px; }
+.career-scroll::-webkit-scrollbar-track { background: transparent; }
+.career-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.career-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+.career-spotlight-card {
+  border: 1px solid var(--primary);
+  border-radius: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, var(--primary-dim), transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.career-spotlight-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.career-spotlight-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.career-spotlight-match {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--surface);
+  padding: 2px 10px;
+  border-radius: 999px;
+}
+
+.career-spotlight-reason { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+.career-spotlight-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.career-spotlight-row-label { color: var(--text-muted); }
+.career-spotlight-row-value { font-weight: 600; color: var(--text); }
+
+.career-spotlight-block { margin-top: 2px; }
+.career-spotlight-block-label { font-size: 11px; font-weight: 600; color: var(--text); display: block; margin-bottom: 3px; }
+
+.career-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 16px 4px; line-height: 1.5; }
+
+.career-source-badge {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.career-summary-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.career-metrics { display: flex; gap: 8px; }
+
+.career-metric-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 8px;
+  background: var(--surface-hover);
+  border-radius: 10px;
+}
+
+.career-metric-label { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.career-metric-value { font-size: 18px; font-weight: 700; color: var(--primary); }
+
+.career-skills { display: flex; flex-direction: column; gap: 12px; }
+
+.career-skill-block { display: flex; flex-direction: column; gap: 3px; }
+
+.career-skill-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.career-skill-name { color: var(--text); font-weight: 500; }
+.career-skill-percent { color: var(--primary); font-weight: 700; font-size: 12px; }
+
+.career-skill-bar {
+  height: 7px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.career-skill-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--primary), #22c55e);
+  width: 0%;
+  transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.career-skill-reason { margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
+.career-skill-courses { font-size: 11px; color: var(--text-muted); }
+.career-skill-courses-label { font-weight: 600; }
+.career-skill-courses ul { margin: 2px 0 0; padding-left: 4px; list-style: none; line-height: 1.6; }
+.career-skill-courses li { color: var(--text); }
+
+.career-roles-title { margin: 4px 0 6px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+
+.career-disclaimer {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.career-role-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+
+.career-role-header { display: flex; align-items: center; justify-content: space-between; }
+.career-role-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.career-role-match { font-size: 12px; font-weight: 700; color: var(--primary); }
+.career-role-reason { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+.career-role-block { margin-top: 8px; }
+.career-role-block-label { font-size: 11px; font-weight: 600; color: var(--text); display: block; margin-bottom: 3px; }
+
+.career-role-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.career-role-tag-list li {
+  font-size: 11px;
+  font-weight: 500;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.career-role-list { margin: 0; padding-left: 16px; font-size: 11px; color: var(--text-muted); line-height: 1.6; }
+
+.career-role-demand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.career-role-demand-label { font-size: 11px; color: var(--text-muted); }
+
+.career-demand-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.career-demand-very-high { background: #dcfce7; color: #15803d; }
+.career-demand-high { background: #fef9c3; color: #854d0e; }
+.career-demand-medium { background: #ffedd5; color: #9a3412; }
+.career-demand-low { background: #fee2e2; color: #b91c1c; }
+
+.career-summary {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface-hover);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.career-summary-line { margin: 0; }
+.career-summary-line + .career-summary-line { margin-top: 4px; }
+
+.career-learning-path { font-size: 12px; color: var(--text-muted); }
+.career-learning-path ul { margin: 4px 0 0; padding-left: 16px; line-height: 1.6; }
 
 /* KALENDER */
 .dropdown--wide { min-width: 360px; max-width: 400px; }

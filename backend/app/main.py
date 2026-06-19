@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import calendar, exams, grades, history, job_agent, language_tutor, moodle_mock, planner, prompt, study_advisor, tutor, upload
+from app.api.v1 import calendar, career, exams, grades, history, job_agent, language_tutor, moodle_mock, planner, prompt, study_advisor, tutor, upload
 from app.core.database import Base, engine
 import app.models
 
@@ -38,6 +38,7 @@ app.include_router(grades.router, prefix="/api")
 app.include_router(planner.router, prefix="/api")
 app.include_router(study_advisor.router, prefix="/api")
 app.include_router(language_tutor.router, prefix="/api")
+app.include_router(career.router, prefix="/api")
 app.include_router(tutor.router)
 
 

@@ -116,6 +116,13 @@
                   📂 PDF auswählen
                   <input type="file" accept=".pdf" @change="selectGradesPdf" hidden />
                 </label>
+                <button
+                  v-if="gradesData && gradesData.courses.length > 0"
+                  @click.stop="clearGrades"
+                  :disabled="gradesClearing"
+                  class="kalender-clear-btn"
+                  title="Noten löschen"
+                >🗑</button>
               </div>
               <p v-if="gradesFileName" class="noten-filename">📄 {{ gradesFileName }}</p>
               <button
@@ -526,6 +533,7 @@ export default {
       gradesLoading: false,
       gradesStatus: null,
       gradesData: null,
+      gradesClearing: false,
       plannerEvents: [],
       plannerSubmitting: false,
       plannerStatus: null,
@@ -673,6 +681,7 @@ export default {
     this.fetchCalendarEvents()
     this.fetchPlannerEvents()
     this.fetchTutorDocuments()
+    this.fetchGrades()
     this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
@@ -1163,7 +1172,7 @@ export default {
         if (res.ok) {
           this.gradesData = await res.json()
           this.gradesStatus = this.gradesData.courses.length > 0
-            ? { type: 'success', message: `${this.gradesData.courses.length} Kurse extrahiert.` }
+            ? { type: 'success', message: `${this.gradesData.courses.length} Kurse extrahiert und gespeichert.` }
             : { type: 'info', message: 'Keine Noten im Dokument gefunden.' }
         } else {
           const data = await res.json().catch(() => ({}))
@@ -1173,6 +1182,36 @@ export default {
         this.gradesStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
       } finally {
         this.gradesLoading = false
+      }
+    },
+    async fetchGrades() {
+      try {
+        const res = await fetch('/api/grades')
+        if (res.ok) {
+          const data = await res.json()
+          if (data.courses && data.courses.length > 0) this.gradesData = data
+        }
+      } catch {
+        // Backend nicht erreichbar beim Start — kein Fehler anzeigen
+      }
+    },
+    async clearGrades() {
+      if (!confirm('Alle gespeicherten Noten löschen?')) return
+      this.gradesClearing = true
+      try {
+        const res = await fetch('/api/grades', { method: 'DELETE' })
+        if (res.ok) {
+          this.gradesData = null
+          this.gradesFile = null
+          this.gradesFileName = ''
+          this.gradesStatus = { type: 'success', message: 'Noten gelöscht.' }
+        } else {
+          this.gradesStatus = { type: 'error', message: 'Fehler beim Löschen.' }
+        }
+      } catch {
+        this.gradesStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.gradesClearing = false
       }
     },
     async fetchPlannerEvents() {

@@ -381,168 +381,108 @@
             </div>
 
             <div v-if="item.id === 'focus-time'" class="focus-section" @click.stop>
-              <div class="focus-config-grid">
-                <label class="focus-field">
-                  <span>Focus</span>
-                  <input type="text" inputmode="decimal" v-model="focusForm.focusMinutes" @change="syncFocusSettings" @click.stop />
+              <div class="focus-settings-bar">
+                <label class="focus-setting">
+                  <span class="focus-setting-label">Focus</span>
+                  <span class="focus-setting-input-wrap">
+                    <input type="text" inputmode="decimal" v-model="focusForm.focusMinutes" @change="syncFocusSettings" @click.stop />
+                    <small>min</small>
+                  </span>
                 </label>
-                <label class="focus-field">
-                  <span>Break</span>
-                  <input type="text" inputmode="decimal" v-model="focusForm.breakMinutes" @change="syncFocusSettings" @click.stop />
+                <span class="focus-setting-divider"></span>
+                <label class="focus-setting">
+                  <span class="focus-setting-label">Break</span>
+                  <span class="focus-setting-input-wrap">
+                    <input type="text" inputmode="decimal" v-model="focusForm.breakMinutes" @change="syncFocusSettings" @click.stop />
+                    <small>min</small>
+                  </span>
                 </label>
-                <label class="focus-field">
-                  <span>Cycles</span>
-                  <input type="number" min="1" max="12" v-model.number="focusForm.cycles" @input="syncFocusSettings" @click.stop />
+                <span class="focus-setting-divider"></span>
+                <label class="focus-setting">
+                  <span class="focus-setting-label">Cycles</span>
+                  <span class="focus-setting-input-wrap">
+                    <input type="number" min="1" max="12" v-model.number="focusForm.cycles" @input="syncFocusSettings" @click.stop />
+                  </span>
                 </label>
               </div>
 
-              <div v-if="focusThemes.length > 1" class="focus-theme-row">
-                <button
-                  v-for="theme in focusThemes"
-                  :key="theme.id"
-                  @click.stop="selectFocusTheme(theme.id)"
-                  :class="['focus-theme-btn', { 'focus-theme-btn--active': focusTheme === theme.id }]"
-                  type="button"
-                >
-                  <span>{{ theme.icon }}</span>
-                  <span>{{ theme.label }}</span>
+              <div :class="['focus-stage', { 'focus-stage--break': focusMode === 'break', 'focus-stage--final': focusFinalCountdownActive }]">
+                <div class="focus-scene" :style="focusSceneStyle">
+                  <div class="flight-sky"></div>
+                  <div class="flight-sun"></div>
+                  <div class="flight-cloud flight-cloud--one"></div>
+                  <div class="flight-cloud flight-cloud--two"></div>
+                  <div class="flight-cloud flight-cloud--three"></div>
+
+                  <svg class="flight-map" viewBox="0 0 1000 360" preserveAspectRatio="none" aria-hidden="true">
+                    <defs>
+                      <linearGradient id="flightRouteGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stop-color="#38bdf8" />
+                        <stop offset="55%" stop-color="#a78bfa" />
+                        <stop offset="100%" stop-color="#34d399" />
+                      </linearGradient>
+                    </defs>
+                    <path class="flight-route-base" d="M92 257 C 280 96, 690 82, 908 238" />
+                    <path class="flight-route-progress" d="M92 257 C 280 96, 690 82, 908 238" pathLength="100" />
+                  </svg>
+
+                  <img class="flight-aircraft" :src="aircraftImg" aria-hidden="true" alt="" />
+                </div>
+              </div>
+
+              <div class="focus-route-line">
+                <span class="focus-route-cities">Berlin <span class="focus-route-plane">✈</span> Paris</span>
+                <div class="focus-cycle-dots">
+                  <span
+                    v-for="n in focusForm.cycles"
+                    :key="n"
+                    :class="['focus-cycle-dot', { 'focus-cycle-dot--done': n <= focusCompletedCycles, 'focus-cycle-dot--active': n === focusCompletedCycles + 1 && focusStatus !== 'idle' && focusStatus !== 'completed' }]"
+                  ></span>
+                </div>
+              </div>
+
+              <div :class="['focus-timer', { 'focus-timer--break': focusMode === 'break', 'focus-timer--final': focusFinalCountdownActive }]">
+                <span class="focus-timer-label">{{ focusModeLabel }}</span>
+                <span class="focus-timer-display">{{ focusRemainingLabel }}</span>
+                <div class="focus-timer-progress">
+                  <div class="focus-timer-progress-fill" :style="{ width: focusProgressPct + '%' }"></div>
+                </div>
+                <span class="focus-timer-pct">{{ focusProgressPct }}%</span>
+              </div>
+
+              <div class="focus-actions">
+                <button @click.stop="startFocusTimer" :disabled="focusStatus === 'running'" class="focus-btn focus-btn--primary">
+                  <span class="focus-btn-icon">▶</span> Start
+                </button>
+                <button @click.stop="pauseFocusTimer" :disabled="focusStatus !== 'running'" class="focus-btn">
+                  <span class="focus-btn-icon">⏸</span> Pause
+                </button>
+                <button @click.stop="resumeFocusTimer" :disabled="focusStatus !== 'paused'" class="focus-btn">
+                  <span class="focus-btn-icon">↻</span> Resume
                 </button>
               </div>
 
-              <div :class="['focus-stage', 'focus-stage--' + focusTheme, { 'focus-stage--break': focusMode === 'break', 'focus-stage--success': focusSuccessPulse, 'focus-stage--final': focusFinalCountdownActive, 'focus-stage--break-starting': focusBreakStarting }]">
-                <div class="focus-stage-top">
-                  <span class="focus-mode-badge">{{ focusModeLabel }}</span>
-                  <span class="focus-route">{{ focusRouteLabel }}</span>
-                </div>
-                <div class="focus-scene" :style="focusSceneStyle">
-                  <template v-if="focusTheme === 'flight'">
-                    <div class="flight-sky-layer flight-sky-layer--far"></div>
-                    <div class="flight-sky-layer flight-sky-layer--near"></div>
-                    <div class="flight-sun"></div>
-                    <div class="flight-cloud flight-cloud--one"></div>
-                    <div class="flight-cloud flight-cloud--two"></div>
-                    <div class="flight-cloud flight-cloud--three"></div>
-
-                    <svg class="flight-map" viewBox="0 0 1000 360" preserveAspectRatio="none" aria-hidden="true">
-                      <defs>
-                        <linearGradient id="flightRouteGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                          <stop offset="0%" stop-color="#38bdf8" />
-                          <stop offset="52%" stop-color="#f8fafc" />
-                          <stop offset="100%" stop-color="#34d399" />
-                        </linearGradient>
-                      </defs>
-                      <path class="flight-route-shadow" d="M92 257 C 280 96, 690 82, 908 238" />
-                      <path class="flight-route-base" d="M92 257 C 280 96, 690 82, 908 238" />
-                      <path class="flight-route-progress" d="M92 257 C 280 96, 690 82, 908 238" pathLength="100" />
-                    </svg>
-
-                    <div class="flight-city flight-city--depart">
-                      <span class="flight-city-dot"></span>
-                      <span class="flight-city-code">BER</span>
-                      <strong>Berlin</strong>
-                    </div>
-                    <div class="flight-city flight-city--arrive">
-                      <span class="flight-city-dot"></span>
-                      <span class="flight-city-code">PAR</span>
-                      <strong>Paris</strong>
-                    </div>
-
-                    <div class="flight-plane-shadow"></div>
-                    <div class="flight-jet-trail">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
-                    <div class="flight-aircraft" aria-hidden="true">
-                      <svg viewBox="0 0 260 156" role="img">
-                        <defs>
-                          <linearGradient id="planeBody" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" stop-color="#ffffff" />
-                            <stop offset="42%" stop-color="#dbeafe" />
-                            <stop offset="100%" stop-color="#64748b" />
-                          </linearGradient>
-                          <linearGradient id="planeWing" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" stop-color="#eff6ff" />
-                            <stop offset="100%" stop-color="#475569" />
-                          </linearGradient>
-                          <filter id="planeGlow" x="-20%" y="-20%" width="140%" height="140%">
-                            <feDropShadow dx="0" dy="10" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.28" />
-                          </filter>
-                        </defs>
-                        <g filter="url(#planeGlow)">
-                          <path d="M98 78 L28 126 C21 131 25 140 34 138 L129 112 Z" fill="url(#planeWing)" />
-                          <path d="M104 70 L22 32 C14 28 12 39 20 45 L128 102 Z" fill="url(#planeWing)" />
-                          <path d="M54 77 L15 55 C8 51 5 58 10 64 L58 101 Z" fill="#94a3b8" />
-                          <path d="M58 72 L22 102 C15 108 20 116 28 112 L72 96 Z" fill="#64748b" />
-                          <path d="M36 75 C82 44 184 33 239 60 C252 66 252 80 239 88 C180 122 80 110 36 86 C28 82 28 80 36 75 Z" fill="url(#planeBody)" />
-                          <path d="M205 59 C219 62 233 67 242 73 C235 78 220 82 204 84 C213 76 213 67 205 59 Z" fill="#f8fafc" opacity="0.92" />
-                          <path d="M81 67 C119 53 169 53 203 64" fill="none" stroke="#0f172a" stroke-width="7" stroke-linecap="round" opacity="0.22" />
-                          <g fill="#0ea5e9">
-                            <circle cx="101" cy="64" r="4" />
-                            <circle cx="119" cy="60" r="4" />
-                            <circle cx="138" cy="58" r="4" />
-                            <circle cx="157" cy="58" r="4" />
-                            <circle cx="176" cy="61" r="4" />
-                          </g>
-                          <path d="M58 72 C102 49 174 45 223 63" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.55" />
-                          <path d="M105 104 C119 102 134 106 139 116 C128 123 112 122 101 115 C98 111 100 106 105 104 Z" fill="#1e293b" />
-                          <path d="M93 43 C108 40 123 43 130 52 C119 61 101 60 91 53 C88 49 89 45 93 43 Z" fill="#1e293b" />
-                        </g>
-                      </svg>
-                    </div>
-
-                    <div class="flight-hud">
-                      <span>{{ focusModeLabel }}</span>
-                      <strong>{{ focusRemainingLabel }}</strong>
-                      <small>{{ focusProgressPct }}% · {{ focusCompletedCycles }} / {{ focusForm.cycles }} cycles</small>
-                    </div>
-                    <div v-if="focusFinalCountdownActive" class="flight-final-countdown">
-                      <span>Final approach</span>
-                      <strong>{{ focusRemainingSeconds }}</strong>
-                    </div>
-                    <div v-if="focusBreakStarting" class="flight-break-transition">
-                      <span>Now we start the break</span>
-                    </div>
-                  </template>
-                  <div v-if="focusMode === 'break'" class="focus-break-calm">Breathe</div>
-                  <div v-if="focusSuccessPulse" class="focus-arrival">Arrived</div>
+              <div v-if="focusStatus === 'completed'" class="focus-summary-card">
+                <span class="focus-summary-check">✓</span>
+                <p class="focus-summary-title">Session complete</p>
+                <p class="focus-summary-text">{{ focusSummaryText }}</p>
+                <div class="focus-summary-stats">
+                  <div class="focus-summary-stat">
+                    <strong>{{ formatFocusMinutes(focusTodayStats.total_focus_time) }}</strong>
+                    <span>minutes</span>
+                  </div>
+                  <div class="focus-summary-stat">
+                    <strong>{{ focusTodayStats.sessions }}</strong>
+                    <span>sessions</span>
+                  </div>
+                  <div class="focus-summary-stat">
+                    <strong>{{ focusTodayStats.completed_cycles }}</strong>
+                    <span>cycles</span>
+                  </div>
                 </div>
               </div>
+              <p v-else class="focus-motivation">{{ focusMotivation }}</p>
 
-              <div class="focus-timer-card">
-                <div class="focus-time-display">{{ focusRemainingLabel }}</div>
-                <div class="focus-progress-wrap">
-                  <div class="focus-progress-bar" :style="{ width: focusProgressPct + '%' }"></div>
-                </div>
-                <div class="focus-progress-meta">
-                  <span>{{ focusProgressPct }}% complete</span>
-                  <span>{{ focusCompletedCycles }} / {{ focusForm.cycles }} cycles</span>
-                </div>
-              </div>
-
-              <div class="focus-action-grid">
-                <button @click.stop="startFocusTimer" :disabled="focusStatus === 'running'" class="focus-primary-btn">Start</button>
-                <button @click.stop="pauseFocusTimer" :disabled="focusStatus !== 'running'" class="focus-secondary-btn">Pause</button>
-                <button @click.stop="resumeFocusTimer" :disabled="focusStatus !== 'paused'" class="focus-secondary-btn">Resume</button>
-              </div>
-
-              <div class="focus-stats">
-                <div class="focus-stat-card">
-                  <span class="focus-stat-value">{{ formatFocusMinutes(focusTodayStats.total_focus_time) }}</span>
-                  <span class="focus-stat-label">minutes today</span>
-                </div>
-                <div class="focus-stat-card">
-                  <span class="focus-stat-value">{{ focusTodayStats.sessions }}</span>
-                  <span class="focus-stat-label">sessions</span>
-                </div>
-                <div class="focus-stat-card">
-                  <span class="focus-stat-value">{{ focusTodayStats.completed_cycles }}</span>
-                  <span class="focus-stat-label">cycles</span>
-                </div>
-              </div>
-
-              <p class="focus-summary">{{ focusSummaryText }}</p>
-              <p class="focus-motivation">{{ focusMotivation }}</p>
               <p v-if="focusStatusMessage" :class="['focus-status', focusStatusMessage.type]">{{ focusStatusMessage.message }}</p>
             </div>
 
@@ -895,12 +835,14 @@
 
 <script>
 import { marked } from 'marked'
+import aircraftImg from './assets/aircraft.png'
 
 marked.use({ breaks: true })
 
 export default {
   data() {
     return {
+      aircraftImg,
       prompt: '',
       messages: [],
       loading: false,
@@ -3607,266 +3549,477 @@ body {
 
 /* FOCUS TIME */
 .focus-section {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 4px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  gap: 22px;
 }
 
-.focus-config-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.focus-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-hover);
-}
-
-.focus-field span {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.focus-field input {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 18px;
-  font-weight: 700;
-  outline: none;
-}
-
-.focus-theme-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.focus-theme-btn {
-  min-height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
+.focus-settings-bar {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.focus-theme-btn:hover { background: var(--surface-hover); color: var(--text); }
-.focus-theme-btn--active { background: var(--primary-dim); border-color: var(--primary); color: var(--primary); }
-
-.focus-stage {
+  gap: 0;
+  padding: 5px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 18% 18%, rgba(34, 197, 94, 0.16), transparent 24%),
-    linear-gradient(135deg, rgba(99, 102, 241, 0.14), rgba(20, 184, 166, 0.12));
 }
 
-.focus-stage--break {
-  background:
-    radial-gradient(circle at 20% 25%, rgba(125, 211, 252, 0.18), transparent 22%),
-    linear-gradient(135deg, rgba(14, 165, 233, 0.11), rgba(34, 197, 94, 0.1));
-}
-
-.focus-stage-top {
+.focus-setting {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid rgba(255,255,255,0.18);
+  padding: 6px 16px;
 }
 
-.focus-mode-badge {
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.72);
-  color: #111827;
+.focus-setting-label {
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.dark .focus-mode-badge { background: rgba(15,17,23,0.72); color: var(--text); }
+.focus-setting-input-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
 
-.focus-route {
-  font-size: 12px;
-  font-weight: 600;
+.focus-setting-input-wrap input {
+  width: 36px;
+  border: none;
+  background: transparent;
   color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  outline: none;
   text-align: right;
+}
+
+.focus-setting-input-wrap small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.focus-setting-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+}
+
+.focus-stage {
+  width: 100%;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px -20px rgba(15, 23, 42, 0.25);
+}
+
+.focus-stage--final {
+  box-shadow: 0 24px 60px -20px rgba(15, 23, 42, 0.25), inset 0 0 0 2px rgba(251,191,36,0.32);
 }
 
 .focus-scene {
   --focus-progress: 0%;
   --focus-ratio: 0;
   position: relative;
-  height: 170px;
+  height: 240px;
   overflow: hidden;
 }
 
-.focus-break-calm {
+.flight-sky {
   position: absolute;
-  left: 50%;
-  bottom: 22px;
-  transform: translateX(-50%);
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.7);
-  color: #0f766e;
-  font-size: 12px;
-  font-weight: 800;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(255,255,255,0.55), transparent 70%),
+    linear-gradient(180deg, #5b9bf0 0%, #7db8f5 32%, #a9d2f8 58%, #d9ecfc 80%, #f3f9ff 100%);
+  transition: background 1.2s ease;
 }
 
-.focus-arrival {
+.dark .flight-sky {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(99,102,241,0.18), transparent 65%),
+    linear-gradient(180deg, #060a16 0%, #0c1326 35%, #16203c 65%, #1d2a4a 100%);
+}
+
+.focus-stage--break .flight-sky {
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(255,255,255,0.6), transparent 70%),
+    linear-gradient(180deg, #7fd1ea 0%, #a7e3ef 36%, #cdeef2 64%, #eef9f6 100%);
+}
+
+.dark .focus-stage--break .flight-sky {
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(45,212,191,0.16), transparent 65%),
+    linear-gradient(180deg, #051418 0%, #08201f 40%, #0d2b28 70%, #123933 100%);
+}
+
+.flight-sun {
   position: absolute;
-  right: 24px;
-  top: 64px;
-  padding: 5px 10px;
+  width: 110px;
+  height: 110px;
+  right: 12%;
+  top: 10%;
   border-radius: 999px;
-  background: #dcfce7;
-  color: #166534;
-  font-size: 12px;
-  font-weight: 800;
-  animation: focusPop 1.2s ease both;
+  background: radial-gradient(circle, #fffdf5 0%, #ffeec2 32%, rgba(255,221,128,0.35) 58%, transparent 72%);
+  opacity: 0.95;
+  filter: blur(0.3px);
 }
 
-.focus-timer-card {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-hover);
+.dark .flight-sun {
+  width: 86px;
+  height: 86px;
+  background: radial-gradient(circle, #f8fafc 0%, #cbd5e1 38%, rgba(148,163,184,0.18) 64%, transparent 72%);
 }
 
-.focus-time-display {
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  font-size: 42px;
-  line-height: 1;
-  font-weight: 800;
+.focus-stage--final .flight-sun { animation: flightFinalSun 1.4s ease-in-out infinite; }
+
+.flight-cloud {
+  position: absolute;
+  width: 220px;
+  height: 64px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.85);
+  filter: blur(0.4px);
+  box-shadow:
+    52px -20px 0 10px rgba(255,255,255,0.78),
+    100px 2px 0 0 rgba(255,255,255,0.7),
+    140px -14px 0 6px rgba(255,255,255,0.62);
+  opacity: 0.85;
+  animation: flightCloudDrift 70s linear infinite, flightCloudBob 7s ease-in-out infinite;
+}
+
+.flight-cloud--one { left: -280px; top: 14%; animation-duration: 78s, 8s; }
+.flight-cloud--two { left: 20%; top: 32%; transform: scale(0.68); animation-duration: 96s, 9s; animation-delay: -30s, -2s; opacity: 0.65; }
+.flight-cloud--three { left: 60%; top: 16%; transform: scale(0.5); animation-duration: 104s, 10s; animation-delay: -60s, -5s; opacity: 0.42; }
+
+.dark .flight-cloud {
+  background: rgba(203,213,225,0.18);
+  box-shadow:
+    52px -20px 0 10px rgba(203,213,225,0.14),
+    100px 2px 0 0 rgba(203,213,225,0.12),
+    140px -14px 0 6px rgba(203,213,225,0.1);
+}
+
+.flight-map {
+  position: absolute;
+  inset: 10% 6% 8%;
+  z-index: 2;
+  overflow: visible;
+}
+
+.flight-route-base,
+.flight-route-progress {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.flight-route-base {
+  stroke: rgba(255,255,255,0.55);
+  stroke-width: 2.5;
+  stroke-dasharray: 1 11;
+}
+
+.dark .flight-route-base { stroke: rgba(226,232,240,0.28); }
+
+.flight-route-progress {
+  stroke: url(#flightRouteGradient);
+  stroke-width: 2.5;
+  stroke-dasharray: var(--flight-route-progress) 100;
+  transition: stroke-dasharray 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  filter: drop-shadow(0 0 6px rgba(56,189,248,0.55));
+}
+
+.flight-aircraft {
+  position: absolute;
+  left: var(--flight-left);
+  top: calc(54% + var(--flight-y));
+  z-index: 6;
+  width: clamp(150px, 21vw, 280px);
+  aspect-ratio: 1536 / 1024;
+  object-fit: contain;
+  display: block;
+  transform: translate(-50%, -50%) rotate(var(--flight-tilt));
+  transform-origin: 50% 55%;
+  transition: left 0.9s linear, top 0.9s linear, transform 0.9s linear;
+  animation: flightMicroTilt 4.2s ease-in-out infinite;
+  filter: drop-shadow(0 18px 22px rgba(15, 23, 42, 0.38)) blur(0.35px);
+  pointer-events: none;
+}
+
+.focus-stage--final .flight-aircraft { animation: flightFinalTilt 0.8s ease-in-out infinite; }
+
+.focus-stage--break .flight-aircraft {
+  opacity: 0.55;
+  filter: drop-shadow(0 18px 22px rgba(15, 23, 42, 0.3)) blur(0.35px) saturate(0.85);
+}
+
+.focus-route-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.focus-route-cities {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text);
-  margin-bottom: 10px;
+  letter-spacing: 0.01em;
 }
 
-.focus-progress-wrap {
-  height: 8px;
-  border-radius: 999px;
-  background: var(--border);
-  overflow: hidden;
+.focus-route-plane {
+  display: inline-block;
+  margin: 0 6px;
+  color: var(--primary);
+  transform: rotate(20deg) translateY(-1px);
 }
 
-.focus-progress-bar {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #22c55e, #3b82f6);
-  transition: width 0.8s linear;
-}
-
-.focus-progress-meta,
-.focus-stats {
+.focus-cycle-dots {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 7px;
 }
 
-.focus-progress-meta {
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--text-muted);
+.focus-cycle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.4s ease, transform 0.4s ease, box-shadow 0.4s ease;
 }
 
-.focus-action-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
+.focus-cycle-dot--done {
+  background: linear-gradient(135deg, #38bdf8, #34d399);
+  box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 18%, transparent);
 }
 
-.focus-primary-btn,
-.focus-secondary-btn {
-  min-height: 34px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  font-size: 12px;
+.focus-cycle-dot--active {
+  background: var(--primary);
+  transform: scale(1.35);
+  animation: focusCycleDotPulse 1.6s ease-in-out infinite;
+}
+
+.focus-timer {
+  width: min(100%, 360px);
+  padding: 28px 30px 24px;
+  border-radius: 28px;
+  background: linear-gradient(165deg, #0b1120 0%, #131b30 55%, #1c2742 100%);
+  box-shadow: 0 24px 60px -18px rgba(8, 12, 24, 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  transition: background 0.6s ease, box-shadow 0.4s ease;
+}
+
+.focus-timer--break {
+  background: linear-gradient(165deg, #07211e 0%, #0c2e2a 55%, #123b35 100%);
+}
+
+.focus-timer--final {
+  animation: focusTimerFinalPulse 1.1s ease-in-out infinite;
+}
+
+.focus-timer-label {
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.56);
+}
+
+.focus-timer-display {
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(56px, 11vw, 80px);
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fff;
+  margin: 2px 0 6px;
+}
+
+.focus-timer-progress {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+  overflow: hidden;
+}
+
+.focus-timer-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #38bdf8, #34d399);
+  transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.focus-timer-pct {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.62);
+}
+
+.focus-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.focus-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 50px;
+  padding: 0 28px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
 }
 
-.focus-primary-btn {
+.focus-btn:hover:not(:disabled) { background: var(--border); transform: translateY(-1px); }
+.focus-btn:active:not(:disabled) { transform: translateY(0); }
+.focus-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+
+.focus-btn--primary {
   background: linear-gradient(135deg, var(--primary), #0ea5e9);
-  border-color: var(--primary);
+  border-color: transparent;
   color: #fff;
-  box-shadow: 0 12px 30px rgba(79,70,229,0.22);
+  box-shadow: 0 16px 32px -12px color-mix(in srgb, var(--primary) 60%, transparent);
 }
 
-.focus-primary-btn:hover:not(:disabled) { background: var(--primary-hover); }
-.focus-secondary-btn { background: transparent; color: var(--text-muted); }
-.focus-secondary-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
-.focus-primary-btn:disabled,
-.focus-secondary-btn:disabled { opacity: 0.45; cursor: default; }
+.focus-btn--primary:hover:not(:disabled) { filter: brightness(1.06); }
 
-.focus-stat-card {
-  flex: 1;
-  padding: 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+.focus-btn-icon { font-size: 13px; }
+
+.focus-summary-card {
+  width: min(100%, 420px);
+  padding: 22px 24px;
+  border-radius: 22px;
   background: var(--surface-hover);
+  border: 1px solid var(--border);
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  animation: focusSummaryIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.focus-stat-value {
-  display: block;
-  color: var(--primary);
-  font-size: 20px;
-  font-weight: 800;
+.focus-summary-check {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #34d399, #22c55e);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 4px;
 }
 
-.focus-stat-label {
-  display: block;
+.focus-summary-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.focus-summary-text {
+  margin: 0;
+  font-size: 13px;
   color: var(--text-muted);
-  font-size: 11px;
-  margin-top: 2px;
+  line-height: 1.5;
 }
 
-.focus-summary,
+.focus-summary-stats {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin-top: 10px;
+}
+
+.focus-summary-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.focus-summary-stat strong {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.focus-summary-stat span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .focus-motivation,
 .focus-status {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   text-align: center;
+  color: var(--text-muted);
 }
 
-.focus-summary { color: var(--text); font-weight: 600; }
-.focus-motivation { color: var(--text-muted); }
 .focus-status.success { color: #16a34a; }
 .focus-status.error { color: #dc2626; }
 .focus-status.info { color: var(--text-muted); }
 
-@keyframes focusPop {
-  0% { opacity: 0; transform: scale(0.75); }
-  22% { opacity: 1; transform: scale(1.08); }
-  100% { opacity: 0; transform: scale(1); }
+@keyframes flightCloudDrift {
+  from { translate: -20vw 0; }
+  to { translate: 130vw 0; }
+}
+
+@keyframes flightCloudBob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes flightMicroTilt {
+  0%, 100% { margin-top: -3px; }
+  50% { margin-top: 5px; }
+}
+
+@keyframes focusCycleDotPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 40%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 0%, transparent); }
+}
+
+@keyframes focusTimerFinalPulse {
+  0%, 100% { box-shadow: 0 24px 60px -18px rgba(8, 12, 24, 0.55), 0 0 0 3px rgba(251,191,36,0.35); }
+  50% { box-shadow: 0 24px 60px -18px rgba(8, 12, 24, 0.55), 0 0 0 7px rgba(251,191,36,0.18); }
+}
+
+@keyframes focusSummaryIn {
+  0% { opacity: 0; transform: translateY(10px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes flightFinalSun {
+  0%, 100% { opacity: 0.92; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+
+@keyframes flightFinalTilt {
+  0%, 100% { margin-top: -4px; }
+  50% { margin-top: 5px; }
 }
 
 .dropdown--focus-full {
@@ -3876,11 +4029,11 @@ body {
   min-width: 0;
   max-width: none;
   padding: 0;
-  border-radius: 18px;
+  border-radius: 24px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: blur(22px);
-  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(26px);
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.24);
 }
 
 .dropdown--focus-full .dropdown-title,
@@ -3891,538 +4044,45 @@ body {
 .dropdown--focus-full .focus-section {
   height: 100%;
   margin: 0;
-  padding: 16px;
-  border-top: none;
-  gap: 12px;
+  padding: 28px 24px;
+  justify-content: center;
+  gap: 26px;
   overflow-y: auto;
 }
 
-.dropdown--focus-full .focus-config-grid {
-  order: 4;
-  grid-template-columns: repeat(3, minmax(92px, 1fr));
-}
-
-.dropdown--focus-full .focus-theme-row {
-  order: 0;
-  max-width: 620px;
-  margin: 0 auto;
-}
-
 .dropdown--focus-full .focus-stage {
-  order: 1;
-  position: relative;
-  min-height: min(58vh, 620px);
-  flex: 1;
-  border-radius: 16px;
+  width: min(100%, 720px);
 }
-
-.dropdown--focus-full .focus-timer-card { order: 2; }
-.dropdown--focus-full .focus-action-grid { order: 3; }
-.dropdown--focus-full .focus-stats { order: 5; }
-.dropdown--focus-full .focus-summary { order: 6; }
-.dropdown--focus-full .focus-motivation { order: 7; }
-.dropdown--focus-full .focus-status { order: 8; }
 
 .dropdown--focus-full .focus-scene {
-  height: min(58vh, 620px);
-  min-height: 420px;
-}
-
-.dropdown--focus-full .focus-stage-top {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  top: 14px;
-  z-index: 8;
-  border-bottom: none;
-  padding: 0;
-  pointer-events: none;
-}
-
-.dropdown--focus-full .focus-mode-badge,
-.dropdown--focus-full .focus-route {
-  box-shadow: 0 14px 35px rgba(15, 23, 42, 0.16);
-}
-
-.dropdown--focus-full .focus-route {
-  padding: 7px 12px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.64);
-  backdrop-filter: blur(14px);
-  color: #0f172a;
-}
-
-.dark .dropdown--focus-full .focus-route {
-  background: rgba(15,23,42,0.58);
-  color: #e2e8f0;
-}
-
-.dropdown--focus-full .focus-dashboard-row {
-  display: grid;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(300px, 1.2fr);
-  gap: 12px;
-  align-items: stretch;
-}
-
-.dropdown--focus-full .focus-action-grid {
-  max-width: 760px;
-  width: 100%;
-  margin: 0 auto;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--surface-hover) 72%, transparent);
-  backdrop-filter: blur(18px);
-}
-
-.dropdown--focus-full .focus-timer-card,
-.dropdown--focus-full .focus-field,
-.dropdown--focus-full .focus-stat-card {
-  background: color-mix(in srgb, var(--surface-hover) 78%, transparent);
-  backdrop-filter: blur(14px);
-}
-
-.focus-stage--flight {
-  position: relative;
-  isolation: isolate;
-  background:
-    radial-gradient(circle at 18% 18%, rgba(255,255,255,0.9), transparent 8%),
-    linear-gradient(180deg, #60a5fa 0%, #93c5fd 42%, #dbeafe 72%, #f8fafc 100%);
-}
-
-.dark .focus-stage--flight {
-  background:
-    radial-gradient(circle at 80% 18%, rgba(226,232,240,0.76), transparent 7%),
-    radial-gradient(circle at 20% 22%, rgba(96,165,250,0.22), transparent 20%),
-    linear-gradient(180deg, #0f172a 0%, #1e1b4b 48%, #334155 100%);
-}
-
-.focus-stage--flight.focus-stage--break {
-  background:
-    radial-gradient(circle at 24% 18%, rgba(255,255,255,0.78), transparent 8%),
-    linear-gradient(180deg, #7dd3fc 0%, #bfdbfe 55%, #f0f9ff 100%);
-}
-
-.focus-stage--final {
-  box-shadow:
-    inset 0 0 0 2px rgba(251,191,36,0.36),
-    0 24px 80px rgba(245,158,11,0.22);
-}
-
-.focus-stage--final .flight-sun {
-  animation: flightFinalSun 1s ease-in-out infinite;
-}
-
-.focus-stage--final .flight-aircraft {
-  animation: flightFinalTilt 0.7s ease-in-out infinite;
-}
-
-.focus-stage--final .flight-hud {
-  border-color: rgba(251,191,36,0.72);
-  box-shadow:
-    0 24px 80px rgba(15,23,42,0.34),
-    0 0 0 8px rgba(251,191,36,0.16);
-  animation: flightHudPulse 1s ease-in-out infinite;
-}
-
-.focus-stage--break-starting .flight-hud {
-  opacity: 0.38;
-  transform: translate(-50%, -50%) scale(0.96);
-  transition: opacity 0.35s ease, transform 0.35s ease;
-}
-
-.flight-sky-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.flight-sky-layer--far {
-  opacity: 0.22;
-  background-image:
-    radial-gradient(circle at 12% 38%, rgba(255,255,255,0.9) 0 2px, transparent 3px),
-    radial-gradient(circle at 44% 24%, rgba(255,255,255,0.7) 0 1px, transparent 2px),
-    radial-gradient(circle at 78% 42%, rgba(255,255,255,0.8) 0 2px, transparent 3px);
-}
-
-.dark .flight-sky-layer--far { opacity: 0.46; }
-
-.flight-sky-layer--near {
-  bottom: -1px;
-  top: auto;
-  height: 34%;
-  background:
-    linear-gradient(180deg, transparent, rgba(15,23,42,0.08)),
-    radial-gradient(ellipse at 42% 100%, rgba(15,23,42,0.12), transparent 45%);
-}
-
-.flight-sun {
-  position: absolute;
-  width: 88px;
-  height: 88px;
-  right: 10%;
-  top: 12%;
-  border-radius: 999px;
-  background: radial-gradient(circle, #fff7ed 0%, #fde68a 46%, rgba(251,191,36,0.2) 70%, transparent 72%);
-  filter: blur(0.2px);
-  opacity: 0.88;
-}
-
-.dark .flight-sun {
-  width: 72px;
-  height: 72px;
-  background: radial-gradient(circle, #f8fafc 0%, #cbd5e1 50%, rgba(148,163,184,0.12) 74%, transparent 76%);
-}
-
-.flight-cloud {
-  position: absolute;
-  width: 210px;
-  height: 70px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.72);
-  filter: blur(0.2px);
-  box-shadow:
-    48px -18px 0 8px rgba(255,255,255,0.66),
-    94px 4px 0 2px rgba(255,255,255,0.62),
-    132px -10px 0 4px rgba(255,255,255,0.58);
-  opacity: 0.54;
-  animation: flightCloudDrift 42s linear infinite;
-}
-
-.flight-cloud--one { left: -260px; top: 16%; animation-duration: 54s; }
-.flight-cloud--two { left: 22%; top: 34%; transform: scale(0.72); animation-duration: 68s; animation-delay: -24s; }
-.flight-cloud--three { left: 62%; top: 19%; transform: scale(0.54); animation-duration: 74s; animation-delay: -46s; opacity: 0.38; }
-
-.dark .flight-cloud {
-  background: rgba(148,163,184,0.24);
-  box-shadow:
-    48px -18px 0 8px rgba(148,163,184,0.18),
-    94px 4px 0 2px rgba(148,163,184,0.16),
-    132px -10px 0 4px rgba(148,163,184,0.14);
-}
-
-.flight-map {
-  position: absolute;
-  inset: 7% 4% 5%;
-  z-index: 2;
-  overflow: visible;
-}
-
-.flight-route-shadow,
-.flight-route-base,
-.flight-route-progress {
-  fill: none;
-  stroke-linecap: round;
-}
-
-.flight-route-shadow {
-  stroke: rgba(15,23,42,0.16);
-  stroke-width: 18;
-  filter: blur(10px);
-}
-
-.flight-route-base {
-  stroke: rgba(255,255,255,0.52);
-  stroke-width: 7;
-  stroke-dasharray: 2 18;
-}
-
-.flight-route-progress {
-  stroke: url(#flightRouteGradient);
-  stroke-width: 7;
-  stroke-dasharray: var(--flight-route-progress) 100;
-  transition: stroke-dasharray 0.8s linear;
-  filter: drop-shadow(0 0 10px rgba(56,189,248,0.48));
-}
-
-.flight-city {
-  position: absolute;
-  z-index: 5;
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: center;
-  gap: 2px 8px;
-  padding: 9px 12px;
-  border: 1px solid rgba(255,255,255,0.5);
-  border-radius: 14px;
-  background: rgba(255,255,255,0.62);
-  backdrop-filter: blur(16px);
-  color: #0f172a;
-  box-shadow: 0 18px 42px rgba(15,23,42,0.12);
-}
-
-.dark .flight-city {
-  background: rgba(15,23,42,0.56);
-  border-color: rgba(148,163,184,0.32);
-  color: #f8fafc;
-}
-
-.flight-city--depart { left: 5.5%; bottom: 14%; }
-.flight-city--arrive { right: 5.5%; bottom: 18%; }
-
-.flight-city-dot {
-  grid-row: span 2;
-  width: 11px;
-  height: 11px;
-  border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 0 7px rgba(34,197,94,0.18);
-}
-
-.flight-city--depart .flight-city-dot { background: #38bdf8; box-shadow: 0 0 0 7px rgba(56,189,248,0.18); }
-.flight-city-code { font-size: 11px; font-weight: 900; color: var(--primary); letter-spacing: 0.08em; }
-.flight-city strong { font-size: 14px; line-height: 1; }
-
-.flight-aircraft,
-.flight-plane-shadow,
-.flight-jet-trail {
-  position: absolute;
-  left: var(--flight-left);
-  top: calc(54% + var(--flight-y));
-  z-index: 6;
-  transition: left 0.8s linear, top 0.8s linear, transform 0.8s linear;
-}
-
-.flight-aircraft {
-  width: clamp(116px, 16vw, 210px);
-  aspect-ratio: 260 / 156;
-  transform: translate(-50%, -50%) rotate(var(--flight-tilt)) perspective(700px) rotateX(8deg) rotateY(-10deg);
-  transform-origin: 52% 50%;
-  animation: flightMicroTilt 3.6s ease-in-out infinite;
-  filter: saturate(1.05) contrast(1.02);
-}
-
-.flight-aircraft svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-
-.flight-plane-shadow {
-  width: clamp(92px, 12vw, 160px);
-  height: 24px;
-  border-radius: 999px;
-  background: rgba(15,23,42,0.22);
-  filter: blur(12px);
-  transform: translate(-50%, 92px) scale(var(--flight-shadow-scale));
-  z-index: 3;
-  opacity: 0.38;
-}
-
-.flight-jet-trail {
-  width: clamp(150px, 22vw, 320px);
-  height: 54px;
-  transform: translate(calc(-100% + 34px), -50%) rotate(var(--flight-tilt));
-  transform-origin: right center;
-  z-index: 4;
-  opacity: var(--flight-trail-opacity);
-  pointer-events: none;
-}
-
-.flight-jet-trail span {
-  position: absolute;
-  right: 0;
-  height: 10px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.34), rgba(255,255,255,0.78));
-  filter: blur(2px);
-  animation: flightTrailPulse 1.8s ease-in-out infinite;
-}
-
-.flight-jet-trail span:nth-child(1) { top: 14px; left: 0; }
-.flight-jet-trail span:nth-child(2) { top: 25px; left: 34px; opacity: 0.78; animation-delay: -0.5s; }
-.flight-jet-trail span:nth-child(3) { top: 36px; left: 74px; opacity: 0.55; animation-delay: -1s; }
-
-.flight-hud {
-  position: absolute;
-  left: 50%;
-  top: 48%;
-  z-index: 7;
-  min-width: min(440px, 72vw);
-  padding: 16px 28px;
-  border: 1px solid rgba(255,255,255,0.42);
-  border-radius: 999px;
-  background: rgba(9,13,23,0.72);
-  color: #fff;
-  text-align: center;
-  transform: translate(-50%, -50%);
-  backdrop-filter: blur(24px);
-  box-shadow: 0 24px 80px rgba(15,23,42,0.34);
-}
-
-.flight-hud span,
-.flight-hud small {
-  display: block;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.72);
-}
-
-.flight-hud strong {
-  display: block;
-  margin: 2px 0 4px;
-  font-size: clamp(42px, 6vw, 88px);
-  line-height: 0.95;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-
-.flight-final-countdown {
-  position: absolute;
-  right: clamp(18px, 5vw, 76px);
-  top: clamp(86px, 18vh, 150px);
-  z-index: 9;
-  width: clamp(112px, 16vw, 172px);
-  aspect-ratio: 1;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 2px;
-  color: #fff;
-  background:
-    radial-gradient(circle, rgba(15,23,42,0.82), rgba(15,23,42,0.58)),
-    conic-gradient(from 0deg, #f59e0b, #ef4444, #f59e0b);
-  border: 1px solid rgba(255,255,255,0.34);
-  backdrop-filter: blur(20px);
-  box-shadow: 0 20px 70px rgba(15,23,42,0.34);
-  animation: flightFinalBubble 1s ease-in-out infinite;
-}
-
-.flight-final-countdown span {
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.74);
-}
-
-.flight-final-countdown strong {
-  font-size: clamp(46px, 7vw, 78px);
-  line-height: 0.9;
-  font-variant-numeric: tabular-nums;
-}
-
-.flight-break-transition {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  z-index: 10;
-  transform: translate(-50%, -50%);
-  padding: 20px 32px;
-  border-radius: 999px;
-  color: #052e2b;
-  background: rgba(204,251,241,0.88);
-  border: 1px solid rgba(255,255,255,0.62);
-  backdrop-filter: blur(24px);
-  box-shadow:
-    0 26px 90px rgba(15,23,42,0.28),
-    0 0 0 14px rgba(20,184,166,0.16);
-  animation: flightBreakStart 2.4s ease both;
-}
-
-.flight-break-transition span {
-  display: block;
-  font-size: clamp(20px, 3vw, 42px);
-  font-weight: 900;
-  letter-spacing: 0;
-  white-space: nowrap;
-}
-
-.focus-stage--break .flight-aircraft,
-.focus-stage--break .flight-jet-trail {
-  opacity: 0.45;
-}
-
-.focus-stage--success .flight-aircraft {
-  animation: flightLandingPulse 1.2s ease both;
-}
-
-@keyframes flightCloudDrift {
-  from { translate: -20vw 0; }
-  to { translate: 120vw 0; }
-}
-
-@keyframes flightMicroTilt {
-  0%, 100% { margin-top: -3px; }
-  50% { margin-top: 5px; }
-}
-
-@keyframes flightTrailPulse {
-  0%, 100% { transform: scaleX(0.96); opacity: 0.62; }
-  50% { transform: scaleX(1.04); opacity: 1; }
-}
-
-@keyframes flightLandingPulse {
-  0% { scale: 1; }
-  45% { scale: 1.035; }
-  100% { scale: 1; }
-}
-
-@keyframes flightHudPulse {
-  0%, 100% { scale: 1; }
-  50% { scale: 1.025; }
-}
-
-@keyframes flightFinalSun {
-  0%, 100% { opacity: 0.88; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.08); }
-}
-
-@keyframes flightFinalTilt {
-  0%, 100% { margin-top: -5px; }
-  50% { margin-top: 7px; }
-}
-
-@keyframes flightFinalBubble {
-  0%, 100% { transform: scale(1); filter: saturate(1); }
-  50% { transform: scale(1.06); filter: saturate(1.22); }
-}
-
-@keyframes flightBreakStart {
-  0% { opacity: 0; transform: translate(-50%, -38%) scale(0.86); }
-  18% { opacity: 1; transform: translate(-50%, -50%) scale(1.04); }
-  72% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  100% { opacity: 0; transform: translate(-50%, -62%) scale(0.96); }
+  height: min(46vh, 420px);
+  min-height: 260px;
 }
 
 @media (max-width: 760px) {
   .dropdown--focus-full {
     inset: 58px 8px 8px;
-    border-radius: 14px;
+    border-radius: 18px;
   }
 
   .dropdown--focus-full .focus-section {
-    padding: 10px;
-  }
-
-  .dropdown--focus-full .focus-theme-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    max-width: none;
+    padding: 18px 14px;
+    gap: 18px;
   }
 
   .dropdown--focus-full .focus-scene {
-    min-height: 380px;
-    height: 52vh;
+    height: 34vh;
+    min-height: 220px;
   }
 
-  .flight-hud {
-    min-width: min(330px, 86vw);
-    padding: 13px 18px;
-  }
+  .focus-timer { padding: 22px 20px 18px; }
+  .focus-timer-display { font-size: clamp(46px, 14vw, 64px); }
 
-  .flight-city {
-    padding: 7px 9px;
-  }
+  .focus-settings-bar { flex-wrap: wrap; justify-content: center; row-gap: 6px; }
+  .focus-setting-divider { display: none; }
 
-  .flight-city strong { font-size: 12px; }
-
-  .dropdown--focus-full .focus-action-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  .focus-actions { gap: 8px; }
+  .focus-btn { padding: 0 18px; min-height: 46px; font-size: 13px; }
 }
 
 /* AI LANGUAGE TUTOR */

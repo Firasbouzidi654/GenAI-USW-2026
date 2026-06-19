@@ -5,6 +5,7 @@ from app.models.chat import ChatMessage
 from app.models.document import Document
 from app.models.exam import Exam
 from app.models.grade import Grade
+from app.models.language_progress import LanguageProgress
 from app.models.quiz import Quiz
 from app.models.quiz_attempt import QuizAttempt
 from app.models.quiz_question import QuizQuestion
@@ -19,6 +20,7 @@ __all__ = [
     "Document",
     "Exam",
     "Grade",
+    "LanguageProgress",
     "Quiz",
     "QuizAttempt",
     "QuizQuestion",

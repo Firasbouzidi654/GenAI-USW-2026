@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'sprachtutor' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -220,6 +220,87 @@
                     <span :class="['planner-priority', 'pprio-' + event.priority.toLowerCase()]">{{ event.priority }}</span>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- AI LANGUAGE TUTOR -->
+            <div v-if="item.id === 'sprachtutor'" class="langtutor-section" @click.stop>
+              <div class="langtutor-lang-row">
+                <button
+                  v-for="lang in langTutorLanguages"
+                  :key="lang"
+                  @click.stop="selectLangTutorLanguage(lang)"
+                  :class="['langtutor-lang-chip', { 'langtutor-lang-chip--active': langTutorLanguage === lang }]"
+                >{{ lang }}</button>
+              </div>
+
+              <div class="langtutor-progress">
+                <span class="langtutor-progress-badge">🏆 {{ langTutorProgress.cefr_level }}</span>
+                <div class="langtutor-xp-wrap">
+                  <div class="langtutor-xp-bar"><div class="langtutor-xp-bar-fill" :style="{ width: langTutorXpBarPct + '%' }"></div></div>
+                  <span class="langtutor-progress-xp">⭐ {{ langTutorProgress.xp }} XP</span>
+                </div>
+              </div>
+
+              <div class="langtutor-messages" ref="langTutorMessages">
+                <div v-if="langTutorHistory.length === 0" class="langtutor-empty">
+                  Say or type something in {{ langTutorLanguage }} to start practicing!
+                </div>
+                <div v-for="(turn, i) in langTutorHistory" :key="i" :class="['langtutor-turn', turn.role]">
+                  <div v-if="turn.role === 'user'" class="langtutor-bubble langtutor-bubble--user">{{ turn.text }}</div>
+                  <div v-else class="langtutor-bubble langtutor-bubble--ai">
+                    <p class="langtutor-reply">{{ turn.reply }}</p>
+                    <div v-if="turn.correction" class="langtutor-block langtutor-block--correction">
+                      <span class="langtutor-block-label">✏️ Correction</span>
+                      <p>{{ turn.correction }}</p>
+                      <p v-if="turn.explanation" class="langtutor-explanation">{{ turn.explanation }}</p>
+                    </div>
+                    <div v-if="turn.vocabulary && turn.vocabulary.length" class="langtutor-block langtutor-block--vocab">
+                      <span class="langtutor-block-label">📚 Vocabulary</span>
+                      <ul>
+                        <li v-for="(v, vi) in turn.vocabulary" :key="vi"><strong>{{ v.word }}</strong> — {{ v.meaning }}</li>
+                      </ul>
+                    </div>
+                    <div v-if="turn.better_version" class="langtutor-block langtutor-block--better">
+                      <span class="langtutor-block-label">💡 Better version</span>
+                      <p>{{ turn.better_version }}</p>
+                    </div>
+                    <div v-if="turn.next_question" class="langtutor-block langtutor-block--question">
+                      <span class="langtutor-block-label">❓ Next question</span>
+                      <p>{{ turn.next_question }}</p>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="langTutorLoading" class="langtutor-bubble langtutor-bubble--ai langtutor-bubble--loading">⏳ Thinking...</div>
+              </div>
+
+              <p v-if="langTutorError" class="langtutor-status error">{{ langTutorError }}</p>
+              <p v-if="langTutorSpeechError" class="langtutor-status error">{{ langTutorSpeechError }}</p>
+
+              <div class="langtutor-input-row">
+                <input
+                  v-model="langTutorInput"
+                  type="text"
+                  :placeholder="langTutorListening ? 'Listening... I will send it when you stop talking' : `Type or speak in ${langTutorLanguage}...`"
+                  @keydown.enter.exact.prevent="sendLangTutorMessage"
+                  @click.stop
+                  class="langtutor-input"
+                />
+                <button
+                  v-if="speechSupported"
+                  @click.stop="toggleLangTutorVoiceInput"
+                  :class="['mic-btn', { 'mic-btn--listening': langTutorListening }]"
+                  title="Speak"
+                  type="button"
+                >
+                  <span v-if="langTutorListening" class="mic-pulse"></span>
+                  🎤
+                </button>
+                <button
+                  @click.stop="sendLangTutorMessage"
+                  :disabled="langTutorLoading || !langTutorInput.trim()"
+                  class="langtutor-send-btn"
+                >➤</button>
               </div>
             </div>
 
@@ -552,6 +633,15 @@ export default {
       tutorResults: null,
       tutorStats: null,
       tutorStatsLoading: false,
+      langTutorLanguages: ['English', 'German', 'French', 'Spanish', 'Italian'],
+      langTutorLanguage: 'English',
+      langTutorInput: '',
+      langTutorHistory: [],
+      langTutorLoading: false,
+      langTutorError: null,
+      langTutorListening: false,
+      langTutorSpeechError: '',
+      langTutorProgress: { language: 'English', cefr_level: 'A1', xp: 0 },
       navItems: [
         {
           id: 'pruefungen',
@@ -593,6 +683,12 @@ export default {
           id: 'planner',
           label: 'Planner',
           icon: '📋',
+          entries: []
+        },
+        {
+          id: 'sprachtutor',
+          label: 'Language Tutor',
+          icon: '🗣️',
           entries: []
         }
       ]
@@ -638,6 +734,13 @@ export default {
       const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
       return [...this.gradesData.courses].sort((a, b) => parse(a.grade) - parse(b.grade))
     },
+    langTutorLocale() {
+      const map = { English: 'en-US', German: 'de-DE', French: 'fr-FR', Spanish: 'es-ES', Italian: 'it-IT' }
+      return map[this.langTutorLanguage] || 'en-US'
+    },
+    langTutorXpBarPct() {
+      return this.langTutorProgress.xp % 100
+    },
     currentQuestion() {
       if (!this.tutorQuiz) return null
       return this.tutorQuiz.questions[this.tutorCurrentQuestion] || null
@@ -682,6 +785,7 @@ export default {
     this.fetchPlannerEvents()
     this.fetchTutorDocuments()
     this.fetchGrades()
+    this.fetchLangTutorProgress()
     this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
@@ -697,6 +801,7 @@ export default {
   beforeUnmount() {
     clearInterval(this._clockTimer)
     if (this._recognition) this._recognition.abort()
+    if (this._langTutorRecognition) this._langTutorRecognition.abort()
   },
   methods: {
     toggleDark() {
@@ -1214,6 +1319,134 @@ export default {
         this.gradesClearing = false
       }
     },
+
+    // --- AI LANGUAGE TUTOR ---
+    selectLangTutorLanguage(lang) {
+      if (lang === this.langTutorLanguage) return
+      this.langTutorLanguage = lang
+      this.langTutorHistory = []
+      this.langTutorInput = ''
+      this.langTutorError = null
+      this.fetchLangTutorProgress()
+    },
+    async fetchLangTutorProgress() {
+      try {
+        const res = await fetch(`/api/ai/language-tutor/progress/${encodeURIComponent(this.langTutorLanguage)}`)
+        if (res.ok) this.langTutorProgress = await res.json()
+      } catch {
+        // Backend nicht erreichbar beim Start — kein Fehler anzeigen
+      }
+    },
+    scrollLangTutorToBottom() {
+      const el = this.$refs.langTutorMessages
+      if (el) el.scrollTop = el.scrollHeight
+    },
+    async sendLangTutorMessage() {
+      const text = this.langTutorInput.trim()
+      if (!text || this.langTutorLoading) return
+
+      this.langTutorInput = ''
+      this.langTutorError = null
+      // Assistant turns carry the conversational reply + the question that was asked,
+      // so Gemini sees what it already said and doesn't repeat itself.
+      const historyForRequest = this.langTutorHistory.map(h => ({
+        role: h.role,
+        text: h.role === 'assistant' ? [h.reply, h.next_question].filter(Boolean).join(' ') : h.text
+      }))
+      this.langTutorHistory.push({ role: 'user', text })
+      this.langTutorLoading = true
+      await this.$nextTick()
+      this.scrollLangTutorToBottom()
+
+      try {
+        const res = await fetch('/api/ai/language-tutor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ language: this.langTutorLanguage, message: text, history: historyForRequest })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          this.langTutorHistory.push({ role: 'assistant', ...data })
+          if (data.progress) this.langTutorProgress = data.progress
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.langTutorError = data.detail || 'Der Sprachtutor konnte die Anfrage nicht verarbeiten.'
+        }
+      } catch {
+        this.langTutorError = 'Backend nicht erreichbar.'
+      } finally {
+        this.langTutorLoading = false
+        await this.$nextTick()
+        this.scrollLangTutorToBottom()
+      }
+    },
+    toggleLangTutorVoiceInput() {
+      if (!this.speechSupported) {
+        this.langTutorSpeechError = 'Voice input is not supported in this browser.'
+        return
+      }
+      if (this.langTutorListening) {
+        this._langTutorManualStop = true
+        this._langTutorRecognition?.stop()
+      } else {
+        this._langTutorManualStop = false
+        this.startLangTutorVoiceInput()
+      }
+    },
+    async startLangTutorVoiceInput() {
+      const micCheck = await this.ensureMicrophoneAccess()
+      if (!micCheck.ok) {
+        this.langTutorListening = false
+        this.langTutorSpeechError = 'Microphone access was denied or unavailable.'
+        return
+      }
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+      const recognition = new SpeechRecognition()
+      recognition.lang = this.langTutorLocale
+      recognition.continuous = false
+      recognition.interimResults = true
+      recognition.maxAlternatives = 1
+
+      recognition.onstart = () => {
+        this.langTutorListening = true
+        this.langTutorSpeechError = ''
+      }
+      recognition.onresult = (event) => {
+        let transcript = ''
+        for (let i = 0; i < event.results.length; i++) transcript += event.results[i][0].transcript
+        this.langTutorInput = transcript
+      }
+      recognition.onerror = (event) => {
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          this.langTutorSpeechError = 'Microphone access was denied. Please allow microphone permission and try again.'
+        } else if (event.error === 'no-speech') {
+          this.langTutorSpeechError = 'No speech detected. Please try again.'
+        } else if (event.error !== 'aborted') {
+          this.langTutorSpeechError = `Voice recognition error: ${event.error}`
+        }
+      }
+      recognition.onend = () => {
+        this.langTutorListening = false
+        this._langTutorRecognition = null
+        // Voice conversation mode: once speech ends, send automatically instead
+        // of waiting for the student to press the send button.
+        if (!this._langTutorManualStop && this.langTutorInput.trim()) {
+          this.sendLangTutorMessage()
+        }
+        this._langTutorManualStop = false
+      }
+
+      this._langTutorRecognition = recognition
+      try {
+        recognition.start()
+      } catch {
+        this.langTutorSpeechError = 'Could not start voice recognition.'
+        this.langTutorListening = false
+      }
+    },
+    // --- END AI LANGUAGE TUTOR ---
+
     async fetchPlannerEvents() {
       try {
         const res = await fetch('/api/planner/events')
@@ -2513,6 +2746,138 @@ body {
 .pprio-urgent { background: #fee2e2; color: #dc2626; }
 .pprio-high   { background: #fef3c7; color: #d97706; }
 .pprio-normal { background: #dcfce7; color: #16a34a; }
+
+/* AI LANGUAGE TUTOR */
+.langtutor-section { display: flex; flex-direction: column; gap: 10px; }
+
+.langtutor-lang-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.langtutor-lang-chip {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.langtutor-lang-chip:hover { border-color: var(--primary); color: var(--primary); }
+.langtutor-lang-chip--active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+.langtutor-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-hover);
+  border-radius: 10px;
+}
+
+.langtutor-progress-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.langtutor-xp-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
+
+.langtutor-xp-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.langtutor-xp-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), #f59e0b);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.langtutor-progress-xp { font-size: 11px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
+
+.langtutor-messages {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.langtutor-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 20px 0; }
+
+.langtutor-turn { display: flex; }
+.langtutor-turn.user { justify-content: flex-end; }
+.langtutor-turn.assistant { justify-content: flex-start; }
+
+.langtutor-bubble {
+  max-width: 90%;
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.langtutor-bubble--user { background: var(--primary); color: #fff; border-bottom-right-radius: 3px; }
+.langtutor-bubble--ai { background: var(--surface-hover); color: var(--text); border-bottom-left-radius: 3px; width: 100%; }
+.langtutor-bubble--loading { color: var(--text-muted); font-style: italic; }
+
+.langtutor-reply { margin: 0; }
+
+.langtutor-block { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.langtutor-block-label { font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 2px; }
+.langtutor-block p { margin: 0; }
+.langtutor-block--correction p { color: #dc2626; }
+.langtutor-explanation { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.langtutor-block--vocab ul { margin: 0; padding-left: 16px; }
+.langtutor-block--vocab li { font-size: 12px; }
+.langtutor-block--better p { color: #16a34a; }
+.langtutor-block--question { border-top-color: var(--primary); }
+.langtutor-block--question p { color: var(--primary); font-weight: 500; }
+
+.langtutor-status { font-size: 12px; margin: 0; text-align: center; }
+.langtutor-status.error { color: #dc2626; }
+
+.langtutor-input-row { display: flex; align-items: center; gap: 6px; }
+
+.langtutor-input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--input-bg);
+  color: var(--text);
+  outline: none;
+}
+
+.langtutor-input:focus { border-color: var(--primary); }
+
+.langtutor-send-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  font-size: 15px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.langtutor-send-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.langtutor-send-btn:disabled { background: var(--border); cursor: default; }
 
 /* TUTOR */
 .tutor-section {

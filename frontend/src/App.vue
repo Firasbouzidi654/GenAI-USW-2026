@@ -445,17 +445,38 @@
         </label>
         <textarea
           v-model="prompt"
-          placeholder="Frage eingeben..."
+          :placeholder="isListening ? 'Listening...' : 'Frage eingeben...'"
           @keydown.enter.exact.prevent="sendPrompt"
           @input="resizeTextarea"
           ref="textarea"
           rows="1"
         ></textarea>
+        <select
+          v-if="speechSupported"
+          v-model="speechLang"
+          class="lang-select"
+          title="Voice recognition language"
+          :disabled="isListening"
+          @change="saveSpeechLang"
+        >
+          <option v-for="opt in speechLangOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+        <button
+          v-if="speechSupported"
+          @click="toggleVoiceInput"
+          :class="['mic-btn', { 'mic-btn--listening': isListening }]"
+          :title="isListening ? 'Stop listening' : 'Speak your question'"
+          type="button"
+        >
+          <span v-if="isListening" class="mic-pulse"></span>
+          🎤
+        </button>
         <button @click="sendPrompt" :disabled="loading || !prompt.trim()" class="send-btn">
           ↑
         </button>
       </div>
-      <p v-if="uploadStatus" class="upload-status">{{ uploadStatus }}</p>
+      <p v-if="speechError" class="upload-status upload-status--error">{{ speechError }}</p>
+      <p v-else-if="uploadStatus" class="upload-status">{{ uploadStatus }}</p>
     </div>
 
   </div>
@@ -482,6 +503,16 @@ export default {
       uploading: false,
       activePanel: null,
       uploadStatus: '',
+      isListening: false,
+      speechSupported: false,
+      speechError: '',
+      speechLang: 'auto',
+      speechLangOptions: [
+        { value: 'auto', label: 'Auto (' + (navigator.language || 'en-US') + ')' },
+        { value: 'en-US', label: 'English (US)' },
+        { value: 'en-GB', label: 'English (UK)' },
+        { value: 'de-DE', label: 'Deutsch' }
+      ],
       jobAgentLoading: false,
       jobAgentStatus: null,
       isDark: false,
@@ -643,9 +674,20 @@ export default {
     this.fetchPlannerEvents()
     this.fetchTutorDocuments()
     this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
+    this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+    this.speechLang = localStorage.getItem('speechLang') || 'auto'
+    if (this.speechSupported) {
+      console.log('[VoiceInput] SpeechRecognition supported. isSecureContext =', window.isSecureContext, 'navigator.language =', navigator.language)
+      if (!window.isSecureContext) {
+        console.warn('[VoiceInput] Page is not a secure context (https or localhost). Microphone access will be blocked by the browser.')
+      }
+    } else {
+      console.warn('[VoiceInput] SpeechRecognition API not found on window. Voice input disabled. Use Chrome or Edge.')
+    }
   },
   beforeUnmount() {
     clearInterval(this._clockTimer)
+    if (this._recognition) this._recognition.abort()
   },
   methods: {
     toggleDark() {
@@ -671,6 +713,154 @@ export default {
       const el = this.$refs.chatArea
       if (el) el.scrollTop = el.scrollHeight
     },
+
+    // --- VOICE INPUT (Web Speech API) ---
+    saveSpeechLang() {
+      localStorage.setItem('speechLang', this.speechLang)
+      console.log('[VoiceInput] language set to', this.speechLang)
+    },
+    toggleVoiceInput() {
+      if (!this.speechSupported) {
+        this.speechError = 'Voice input is not supported in this browser. Please use Chrome or Edge.'
+        console.warn('[VoiceInput] toggleVoiceInput called but speechSupported is false')
+        return
+      }
+      if (this.isListening) {
+        console.log('[VoiceInput] Manual stop requested by user')
+        this._manualStop = true
+        this._recognition?.stop()
+      } else {
+        this._manualStop = false
+        this.startVoiceInput()
+      }
+    },
+    // Asks for the microphone explicitly and "warms up" the capture device
+    // before handing off to SpeechRecognition. Without this, Chrome on
+    // Windows sometimes needs 1-2s to initialize the audio device after
+    // recognition.start() is called, while the no-speech silence timer is
+    // already running - causing a spurious "no-speech" error before the
+    // user has a real chance to speak. Doing getUserMedia first removes
+    // that race and also gives us a clean, separate permission error.
+    async ensureMicrophoneAccess() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const tracks = stream.getAudioTracks()
+        console.log('[VoiceInput] getUserMedia OK. Track(s):', tracks.map(t => ({ label: t.label, muted: t.muted, readyState: t.readyState })))
+        tracks.forEach(t => t.stop())
+        return { ok: true }
+      } catch (err) {
+        console.error('[VoiceInput] getUserMedia FAILED:', err.name, err.message)
+        return { ok: false, err }
+      }
+    },
+    async startVoiceInput(isRetry = false) {
+      console.group(`[VoiceInput] startVoiceInput(isRetry=${isRetry})`)
+
+      const micCheck = await this.ensureMicrophoneAccess()
+      if (!micCheck.ok) {
+        this.isListening = false
+        const err = micCheck.err
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError') {
+          this.speechError = 'Microphone access was denied. Allow microphone permission for this site in your browser settings and try again.'
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+          this.speechError = 'No microphone was found on this device.'
+        } else if (err.name === 'NotReadableError') {
+          this.speechError = 'The microphone is already in use by another application.'
+        } else {
+          this.speechError = `Could not access microphone (${err.name}).`
+        }
+        console.groupEnd()
+        return
+      }
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+      const recognition = new SpeechRecognition()
+      recognition.lang = this.speechLang === 'auto' ? (navigator.language || 'en-US') : this.speechLang
+      recognition.continuous = false
+      recognition.interimResults = true
+      recognition.maxAlternatives = 1
+
+      let audioStarted = false
+      let speechStarted = false
+      let gotResult = false
+
+      recognition.onstart = () => {
+        console.log('[VoiceInput] onstart - session started, lang =', recognition.lang)
+        this.isListening = true
+        this.speechError = ''
+      }
+      recognition.onaudiostart = () => {
+        audioStarted = true
+        console.log('[VoiceInput] onaudiostart - mic audio capture is live')
+      }
+      recognition.onsoundstart = () => console.log('[VoiceInput] onsoundstart - sound detected (could be noise)')
+      recognition.onspeechstart = () => {
+        speechStarted = true
+        console.log('[VoiceInput] onspeechstart - speech detected')
+      }
+      recognition.onspeechend = () => console.log('[VoiceInput] onspeechend - speech segment ended')
+      recognition.onsoundend = () => console.log('[VoiceInput] onsoundend - sound ended')
+      recognition.onaudioend = () => console.log('[VoiceInput] onaudioend - mic audio capture stopped')
+      recognition.onnomatch = () => console.warn('[VoiceInput] onnomatch - audio captured but could not be matched to text')
+      recognition.onresult = (event) => {
+        gotResult = true
+        let transcript = ''
+        for (let i = 0; i < event.results.length; i++) transcript += event.results[i][0].transcript
+        const last = event.results[event.results.length - 1]
+        console.log('[VoiceInput] onresult:', JSON.stringify(transcript), 'isFinal =', last.isFinal)
+        this.prompt = transcript
+        this.$nextTick(() => this.resizeTextarea())
+      }
+      recognition.onerror = (event) => {
+        console.error('[VoiceInput] onerror:', event.error, event.message || '(no message)', { audioStarted, speechStarted })
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          this.speechError = 'Microphone access was denied. Please allow microphone permission and try again.'
+        } else if (event.error === 'audio-capture') {
+          this.speechError = 'No microphone could be accessed. Check that a mic is connected and not used by another app.'
+        } else if (event.error === 'network') {
+          this.speechError = 'Voice recognition needs an internet connection to reach the speech service.'
+        } else if (event.error === 'no-speech') {
+          if (!audioStarted && !isRetry) {
+            // Classic startup race: recognition ended before the mic was
+            // even live. Safe to silently retry exactly once now that the
+            // device has been warmed up by ensureMicrophoneAccess().
+            console.warn('[VoiceInput] no-speech fired before onaudiostart - retrying once (startup race)')
+            this._autoRetry = true
+          } else if (!audioStarted) {
+            this.speechError = 'No microphone audio was detected at all. Check Windows microphone privacy settings (Settings > Privacy & security > Microphone) and that the right input device is selected as default.'
+          } else if (!speechStarted) {
+            this.speechError = 'Microphone is capturing audio, but no speech was detected. Check your input volume/mic placement and try speaking immediately after the mic turns red.'
+          } else {
+            this.speechError = 'No speech detected. Please try again.'
+          }
+        } else if (event.error !== 'aborted') {
+          this.speechError = `Voice recognition error: ${event.error}`
+        }
+      }
+      recognition.onend = () => {
+        console.log('[VoiceInput] onend', { audioStarted, speechStarted, gotResult })
+        console.groupEnd()
+        this.isListening = false
+        this._recognition = null
+        if (this._autoRetry && !this._manualStop) {
+          this._autoRetry = false
+          this.startVoiceInput(true)
+        }
+      }
+
+      this._recognition = recognition
+      try {
+        console.log('[VoiceInput] calling recognition.start()')
+        recognition.start()
+      } catch (err) {
+        console.error('[VoiceInput] recognition.start() threw:', err)
+        this.speechError = 'Could not start voice recognition.'
+        this.isListening = false
+        console.groupEnd()
+      }
+    },
+    // --- END VOICE INPUT ---
+
     // --- STUDY ADVISOR: keyword list that triggers the planner-aware AI ---
     isPlannerQuestion(text) {
       const keywords = [
@@ -1623,6 +1813,65 @@ body {
 .send-btn:hover:not(:disabled) { background: var(--primary-hover); }
 .send-btn:disabled { background: var(--border); cursor: default; }
 
+.lang-select {
+  flex-shrink: 0;
+  height: 28px;
+  max-width: 90px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 4px;
+  margin-bottom: 3px;
+  cursor: pointer;
+}
+
+.lang-select:disabled { opacity: 0.5; cursor: default; }
+
+.mic-btn {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+}
+
+.mic-btn:hover { color: var(--primary); background: var(--surface-hover); }
+
+.mic-btn--listening {
+  color: #fff;
+  background: #ef4444;
+}
+
+.mic-btn--listening:hover { color: #fff; background: #ef4444; }
+
+.mic-pulse {
+  position: absolute;
+  inset: -4px;
+  border-radius: 12px;
+  background: #ef4444;
+  opacity: 0.5;
+  animation: mic-pulse 1.4s ease-out infinite;
+  z-index: -1;
+}
+
+@keyframes mic-pulse {
+  0% { transform: scale(0.9); opacity: 0.5; }
+  70% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
 .upload-status {
   max-width: 720px;
   margin: 6px auto 0;
@@ -1630,6 +1879,8 @@ body {
   color: var(--text-muted);
   text-align: center;
 }
+
+.upload-status--error { color: #ef4444; }
 
 /* JOB AGENT */
 .job-agent-section {

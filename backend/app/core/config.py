@@ -23,6 +23,11 @@ class Settings(BaseSettings):
         "gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,"
         "gemini-1.5-flash,gemini-1.5-pro"
     )
+    # HTW Berlin IMAP mailbox (see app.services.imap_email_service)
+    htw_email_address: str = ""
+    htw_email_password: str = ""
+    htw_imap_host: str = ""
+    htw_imap_port: int = 993
 
     @property
     def gemini_model_list(self) -> list[str]:

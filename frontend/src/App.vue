@@ -12,7 +12,7 @@
           >
             {{ item.icon }} {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'sprachtutor' || item.id === 'career', 'dropdown--focus-full': item.id === 'focus-time' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'sprachtutor' || item.id === 'career' || item.id === 'emails', 'dropdown--focus-full': item.id === 'focus-time' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -199,6 +199,81 @@
                   </ul>
                 </div>
               </template>
+              </div>
+            </div>
+
+            <div v-if="item.id === 'emails'" class="email-agent-section">
+              <div class="career-toolbar">
+                <span class="career-toolbar-title">HTW E-Mails</span>
+                <button
+                  @click.stop="checkHtwEmails"
+                  :disabled="emailAgentLoading"
+                  class="job-agent-btn"
+                >
+                  {{ emailAgentLoading ? '⏳ Checking...' : '📩 Check HTW Emails' }}
+                </button>
+              </div>
+
+              <p v-if="emailAgentError" class="job-agent-status error">{{ emailAgentError }}</p>
+
+              <div v-if="emailAgentResult" class="career-scroll">
+                <span class="career-source-badge">📩 AI Summary</span>
+                <p v-if="emailAgentResult.summary" class="career-summary-text">{{ emailAgentResult.summary }}</p>
+
+                <div v-if="emailAgentResult.urgent_actions && emailAgentResult.urgent_actions.length" class="email-agent-block">
+                  <p class="career-roles-title">🔴 Urgent Actions</p>
+                  <ul class="email-agent-list">
+                    <li v-for="(action, idx) in emailAgentResult.urgent_actions" :key="'ua-' + idx" class="email-agent-item">
+                      <div class="email-agent-item-header">
+                        <strong>{{ action.title }}</strong>
+                        <span :class="['email-agent-priority', 'priority-' + (action.priority || 'MEDIUM').toLowerCase()]">{{ action.priority }}</span>
+                      </div>
+                      <p v-if="action.deadline" class="email-agent-item-deadline">⏰ {{ action.deadline }}</p>
+                      <p v-if="action.reason" class="email-agent-item-summary">{{ action.reason }}</p>
+                    </li>
+                  </ul>
+                </div>
+
+                <div v-if="emailAgentResult.events && emailAgentResult.events.length" class="email-agent-block">
+                  <p class="career-roles-title">📅 Upcoming Events</p>
+                  <ul class="email-agent-list">
+                    <li v-for="(event, idx) in emailAgentResult.events" :key="'ev-' + idx" class="email-agent-item">
+                      <div class="email-agent-item-header"><strong>{{ event.title }}</strong></div>
+                      <div class="email-agent-item-meta">
+                        <span v-if="event.date">{{ event.date }}</span>
+                        <span v-if="event.location"> · {{ event.location }}</span>
+                      </div>
+                    </li>
+                  </ul>
+                </div>
+
+                <div v-if="emailAgentResult.important_updates && emailAgentResult.important_updates.length" class="email-agent-block">
+                  <p class="career-roles-title">📚 Course Updates</p>
+                  <ul class="email-agent-list">
+                    <li v-for="(update, idx) in emailAgentResult.important_updates" :key="'iu-' + idx" class="email-agent-item">
+                      <div class="email-agent-item-header"><strong>{{ update.title }}</strong></div>
+                      <p v-if="update.summary" class="email-agent-item-summary">{{ update.summary }}</p>
+                    </li>
+                  </ul>
+                </div>
+
+                <p
+                  v-if="!emailAgentResult.urgent_actions?.length && !emailAgentResult.events?.length && !emailAgentResult.important_updates?.length"
+                  class="career-empty"
+                >No important emails found.</p>
+
+                <div v-if="emailAgentResult.raw_emails && emailAgentResult.raw_emails.length" class="email-agent-block">
+                  <button @click.stop="showRawEmails = !showRawEmails" class="email-agent-toggle">
+                    {{ showRawEmails ? '▾' : '▸' }} Show original emails ({{ emailAgentResult.raw_emails.length }})
+                  </button>
+                  <ul v-if="showRawEmails" class="email-agent-list">
+                    <li v-for="(mail, idx) in emailAgentResult.raw_emails" :key="'raw-' + idx" class="email-agent-item">
+                      <div class="email-agent-item-header"><strong>{{ mail.subject }}</strong></div>
+                      <div class="email-agent-item-meta">{{ mail.sender }} · {{ mail.date }}</div>
+                      <p class="email-agent-item-summary">{{ mail.snippet }}</p>
+                    </li>
+                  </ul>
+                </div>
               </div>
             </div>
 
@@ -885,6 +960,10 @@ export default {
       jobAgentStatus: null,
       cvFile: null,
       jobAgentResults: null,
+      emailAgentLoading: false,
+      emailAgentError: null,
+      emailAgentResult: null,
+      showRawEmails: false,
       careerAnalysis: null,
       careerLoading: false,
       careerError: null,
@@ -995,6 +1074,12 @@ export default {
           id: 'sprachtutor',
           label: 'Language Tutor',
           icon: '🗣️',
+          entries: []
+        },
+        {
+          id: 'emails',
+          label: 'E-Mails',
+          icon: '📩',
           entries: []
         }
       ]
@@ -1652,6 +1737,25 @@ export default {
         this.jobAgentStatus = { type: 'error', message: 'Error: Backend not reachable.' }
       } finally {
         this.jobAgentLoading = false
+      }
+    },
+    async checkHtwEmails() {
+      this.emailAgentLoading = true
+      this.emailAgentError = null
+      this.emailAgentResult = null
+      this.showRawEmails = false
+      try {
+        const res = await fetch('/api/email-agent/summary')
+        if (res.ok) {
+          this.emailAgentResult = await res.json()
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.emailAgentError = data.detail || 'Failed to check emails.'
+        }
+      } catch {
+        this.emailAgentError = 'Error: Backend not reachable.'
+      } finally {
+        this.emailAgentLoading = false
       }
     },
     async fetchCalendarEvents() {
@@ -2824,6 +2928,87 @@ body {
 }
 
 .job-agent-result a { margin-left: 6px; }
+
+/* EMAIL AGENT */
+.email-agent-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.email-agent-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.email-agent-item {
+  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.email-agent-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.email-agent-badge {
+  font-size: 11px;
+  color: #dc2626;
+  white-space: nowrap;
+}
+
+.email-agent-item-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.email-agent-item-summary {
+  margin: 6px 0 0;
+}
+
+.email-agent-item-deadline {
+  margin: 6px 0 0;
+  font-weight: 500;
+}
+
+.email-agent-block {
+  margin-top: 14px;
+}
+
+.email-agent-priority {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.priority-high { background: #fee2e2; color: #dc2626; }
+.priority-medium { background: #fef3c7; color: #b45309; }
+.priority-low { background: #dcfce7; color: #16a34a; }
+
+.email-agent-toggle {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.email-agent-toggle:hover { background: var(--surface-hover); }
 
 /* CAREER */
 .career-section {

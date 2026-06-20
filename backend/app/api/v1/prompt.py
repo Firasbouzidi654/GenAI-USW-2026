@@ -1,17 +1,19 @@
+"""Prompt-Endpunkt — leitet Fragen des Studierenden an den TutorAgent weiter.
+
+Der TutorAgent entscheidet selbstständig, ob und welche Dokumente er durchsucht,
+bevor er antwortet (echter ReAct-Loop statt einfacher RAG-Pipeline).
+"""
+
 import json
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from google import genai
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.agents.tutor_agent import run_tutor_agent
 from app.core.database import get_db
 from app.models.chat import ChatMessage
-from app.rag.retriever import retrieve_context
-
-client = genai.Client(api_key=settings.gemini_api_key)
 
 router = APIRouter()
 
@@ -20,37 +22,34 @@ class PromptRequest(BaseModel):
     prompt: str
 
 
-def _build_prompt(user_prompt: str, context: str) -> str:
-    if context:
-        return f"Kontext aus den Unterlagen:\n{context}\n\nFrage: {user_prompt}"
-    return user_prompt
-
-
 @router.post("/prompt")
 async def prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
-    context = await retrieve_context(body.prompt)
-    full_prompt = _build_prompt(body.prompt, context)
+    """TutorAgent beantwortet die Frage — mit autonomer Dokumentensuche (RAG + Tool Calling)."""
 
     async def generate():
-        accumulated = []
         try:
-            stream = await client.aio.models.generate_content_stream(
-                model="gemini-3.1-flash-lite-preview", contents=full_prompt
-            )
-            async for chunk in stream:
-                if chunk.text:
-                    accumulated.append(chunk.text)
-                    yield f"data: {json.dumps(chunk.text)}\n\n"
+            answer = await run_tutor_agent(body.prompt, db)
         except Exception:
-            yield "data: [ERROR]\n\n"
-        finally:
-            full_response = "".join(accumulated)
-            if full_response:
-                try:
-                    db.add(ChatMessage(prompt=body.prompt, response=full_response))
-                    await db.commit()
-                except Exception:
-                    pass
+            yield f"data: {json.dumps('[ERROR]')}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # Antwort in sinnvolle Chunks aufteilen (wortweise), damit das SSE-Streaming
+        # beim Client weiterhin animiert wirkt (TutorAgent gibt erst am Ende zurück)
+        words = answer.split(" ")
+        chunk_size = 8
+        for i in range(0, len(words), chunk_size):
+            chunk = " ".join(words[i:i + chunk_size])
+            if i + chunk_size < len(words):
+                chunk += " "
+            yield f"data: {json.dumps(chunk)}\n\n"
+
+        try:
+            db.add(ChatMessage(prompt=body.prompt, response=answer))
+            await db.commit()
+        except Exception:
+            pass
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

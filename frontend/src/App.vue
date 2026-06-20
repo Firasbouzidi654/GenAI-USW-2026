@@ -18,9 +18,16 @@
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
             </ul>
             <div v-if="item.id === 'career'" class="job-agent-section">
+              <input
+                type="file"
+                accept="application/pdf"
+                @click.stop
+                @change="onCvSelected"
+                class="job-agent-cv-input"
+              />
               <button
                 @click.stop="launchJobAgent"
-                :disabled="jobAgentLoading"
+                :disabled="jobAgentLoading || !cvFile"
                 class="job-agent-btn"
               >
                 {{ jobAgentLoading ? '⏳ Launching...' : '🚀 Launch Job Search Agent' }}
@@ -28,6 +35,14 @@
               <p v-if="jobAgentStatus" :class="['job-agent-status', jobAgentStatus.type]">
                 {{ jobAgentStatus.message }}
               </p>
+              <ul v-if="jobAgentResults && jobAgentResults.jobs && jobAgentResults.jobs.length" class="job-agent-results">
+                <li v-for="(job, idx) in jobAgentResults.jobs" :key="idx" class="job-agent-result">
+                  <strong>{{ job.title }}</strong> @ {{ job.company }}
+                  <span v-if="job.location"> · {{ job.location }}</span>
+                  <span v-if="job.match_score !== undefined"> · {{ job.match_score }}% match</span>
+                  <a v-if="job.url" :href="job.url" target="_blank" rel="noopener">View</a>
+                </li>
+              </ul>
             </div>
 
             <div v-if="item.id === 'career'" class="career-section">
@@ -868,6 +883,8 @@ export default {
       ],
       jobAgentLoading: false,
       jobAgentStatus: null,
+      cvFile: null,
+      jobAgentResults: null,
       careerAnalysis: null,
       careerLoading: false,
       careerError: null,
@@ -1604,17 +1621,29 @@ export default {
         this.loading = false
       }
     },
+    onCvSelected(event) {
+      this.cvFile = event.target.files[0] || null
+      this.jobAgentStatus = null
+      this.jobAgentResults = null
+    },
     async launchJobAgent() {
+      if (!this.cvFile) {
+        this.jobAgentStatus = { type: 'error', message: 'Please select a CV (PDF) first.' }
+        return
+      }
       this.jobAgentLoading = true
       this.jobAgentStatus = null
+      this.jobAgentResults = null
       try {
-        const res = await fetch('/api/job-agent/run', { //F appeler B 
-          method: 'POST',//Je ne veux pas seulement lire des données.Je veux déclencher une action.
-          headers: { 'Content-Type': 'application/json' }, //BE : Je vais t'envoyer du JSON.
-          body: JSON.stringify({}) 
+        const formData = new FormData()
+        formData.append('cv', this.cvFile)
+        const res = await fetch('/api/job-agent/run', {
+          method: 'POST',
+          body: formData
         })
         if (res.ok) {
-          this.jobAgentStatus = { type: 'success', message: 'Job Search Agent launched!' }
+          this.jobAgentResults = await res.json()
+          this.jobAgentStatus = { type: 'success', message: 'Job Search Agent finished!' }
         } else {
           const data = await res.json().catch(() => ({}))
           this.jobAgentStatus = { type: 'error', message: data.detail || 'Failed to launch agent.' }
@@ -2771,6 +2800,30 @@ body {
 
 .job-agent-status.success { color: #16a34a; }
 .job-agent-status.error { color: #dc2626; }
+
+.job-agent-cv-input {
+  width: 100%;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.job-agent-results {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.job-agent-result {
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.job-agent-result a { margin-left: 6px; }
 
 /* CAREER */
 .career-section {

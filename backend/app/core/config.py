@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     rag_top_k: int = 4
     # Paste the n8n Production Webhook URL here (see README for setup instructions)
     n8n_job_agent_webhook_url: str = ""
+    # Comma-separated fallback chain, tried in order (see app.agents.base.run_with_model_fallback)
+    gemini_models: str = (
+        "gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,"
+        "gemini-1.5-flash,gemini-1.5-pro"
+    )
+
+    @property
+    def gemini_model_list(self) -> list[str]:
+        return [m.strip() for m in self.gemini_models.split(",") if m.strip()]
 
 
 settings = Settings()

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm
+from app.agents.base import extract_text_output, get_llm, run_with_model_fallback
 from app.models.grade import Grade
 
 logger = logging.getLogger(__name__)
@@ -209,14 +209,15 @@ async def get_ai_career_analysis(courses: list[dict]) -> dict:
 
     user_prompt = "Notenblatt des Studierenden:\n" + "\n".join(lines)
 
-    llm = get_llm(temperature=0.2)
-    structured_llm = llm.with_structured_output(_CareerAnalysisSchema)
-
-    try:
-        result: _CareerAnalysisSchema = await structured_llm.ainvoke([
+    async def _invoke(llm):
+        structured_llm = llm.with_structured_output(_CareerAnalysisSchema)
+        return await structured_llm.ainvoke([
             SystemMessage(content=_ANALYSIS_SYSTEM_PROMPT),
             HumanMessage(content=user_prompt),
         ])
+
+    try:
+        result: _CareerAnalysisSchema = await run_with_model_fallback(_invoke, temperature=0.2)
     except Exception as exc:
         logger.error("CareerAgent Analyse fehlgeschlagen: %s", exc)
         raise RuntimeError("KI-Karriereanalyse fehlgeschlagen.") from exc

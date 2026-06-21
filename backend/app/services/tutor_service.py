@@ -57,6 +57,8 @@ async def generate_quiz(
     num_questions: int,
     db: AsyncSession,
     course_name: str | None = None,
+    chat_id: str | None = None,
+    user_id: str = "local",
 ) -> tuple[Quiz, list[QuizQuestion]]:
     """Generiert ein Quiz via TutorAgent und speichert es in der DB.
 
@@ -77,6 +79,8 @@ async def generate_quiz(
         num_questions=num_questions,
         db=db,
         course_name=course_name,
+        chat_id=chat_id,
+        user_id=user_id,
     )
 
     doc_label = course_name or ", ".join(source_documents)

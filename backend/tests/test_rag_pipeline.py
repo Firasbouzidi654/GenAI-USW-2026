@@ -39,20 +39,26 @@ def test_chunk_text_chunks_respect_max_size():
 
 
 def test_doc_id_is_stable_for_same_input():
-    a = _doc_id("file.pdf", 0, "hallo welt")
-    b = _doc_id("file.pdf", 0, "hallo welt")
+    a = _doc_id("file.pdf", 0, "hallo welt", "chat1")
+    b = _doc_id("file.pdf", 0, "hallo welt", "chat1")
     assert a == b
 
 
 def test_doc_id_changes_with_content():
-    a = _doc_id("file.pdf", 0, "hallo welt")
-    b = _doc_id("file.pdf", 0, "anderer text")
+    a = _doc_id("file.pdf", 0, "hallo welt", "chat1")
+    b = _doc_id("file.pdf", 0, "anderer text", "chat1")
     assert a != b
 
 
-def test_doc_id_includes_filename_and_index():
-    doc_id = _doc_id("vorlesung.pdf", 3, "content")
-    assert doc_id.startswith("vorlesung.pdf::3::")
+def test_doc_id_changes_with_chat():
+    a = _doc_id("file.pdf", 0, "hallo welt", "chat1")
+    b = _doc_id("file.pdf", 0, "hallo welt", "chat2")
+    assert a != b
+
+
+def test_doc_id_includes_chat_filename_and_index():
+    doc_id = _doc_id("vorlesung.pdf", 3, "content", "chat1")
+    assert doc_id.startswith("chat1::vorlesung.pdf::3::")
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +85,7 @@ async def test_process_document_indexes_chunks(tmp_path):
          patch.object(pipeline, "embed_texts", return_value=[[0.1, 0.2], [0.3, 0.4]]) as mock_embed, \
          patch.object(pipeline, "_chunk_text", return_value=["chunk a", "chunk b"]), \
          patch.object(pipeline, "get_collection", return_value=fake_collection):
-        await process_document(str(pdf_path))
+        await process_document(str(pdf_path), chat_id="chat1", user_id="local")
 
     mock_embed.assert_called_once_with(["chunk a", "chunk b"])
     fake_collection.upsert.assert_called_once()
@@ -87,10 +93,10 @@ async def test_process_document_indexes_chunks(tmp_path):
     assert kwargs["documents"] == ["chunk a", "chunk b"]
     assert kwargs["embeddings"] == [[0.1, 0.2], [0.3, 0.4]]
     assert len(kwargs["ids"]) == 2
-    assert all(i.startswith("skript.pdf::") for i in kwargs["ids"])
+    assert all(i.startswith("chat1::skript.pdf::") for i in kwargs["ids"])
     assert kwargs["metadatas"] == [
-        {"source": "skript.pdf", "chunk": 0},
-        {"source": "skript.pdf", "chunk": 1},
+        {"source": "skript.pdf", "chunk": 0, "chat_id": "chat1", "user_id": "local"},
+        {"source": "skript.pdf", "chunk": 1, "chat_id": "chat1", "user_id": "local"},
     ]
 
 

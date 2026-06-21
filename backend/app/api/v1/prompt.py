@@ -1,7 +1,8 @@
-"""Prompt-Endpunkt — leitet Fragen des Studierenden an den TutorAgent weiter.
+"""Prompt-Endpunkt — universeller Chat-Einstieg ins Multi-Agent-System.
 
-Der TutorAgent entscheidet selbstständig, ob und welche Dokumente er durchsucht,
-bevor er antwortet (echter ReAct-Loop statt einfacher RAG-Pipeline).
+Die Anfrage geht an den Orchestrator (Supervisor), der entscheidet, welcher
+Spezial-Agent (Tutor, Evaluator, Planner, Career) zuständig ist, und sie bei
+Bedarf verkettet.
 """
 
 import json
@@ -11,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.tutor_agent import run_tutor_agent
+from app.agents.orchestrator import run_orchestrator
 from app.core.database import get_db
 from app.models.chat import ChatMessage
 
@@ -20,15 +21,17 @@ router = APIRouter()
 
 class PromptRequest(BaseModel):
     prompt: str
+    chat_id: str | None = None
+    user_id: str = "local"
 
 
 @router.post("/prompt")
 async def prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
-    """TutorAgent beantwortet die Frage — mit autonomer Dokumentensuche (RAG + Tool Calling)."""
+    """Orchestrator beantwortet die Frage und koordiniert dafür die Spezial-Agents."""
 
     async def generate():
         try:
-            answer = await run_tutor_agent(body.prompt, db)
+            answer = await run_orchestrator(body.prompt, db, body.chat_id, body.user_id)
         except Exception:
             yield f"data: {json.dumps('[ERROR]')}\n\n"
             yield "data: [DONE]\n\n"

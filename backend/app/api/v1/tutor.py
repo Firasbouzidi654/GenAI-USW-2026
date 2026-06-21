@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -23,6 +23,8 @@ class GenerateQuizRequest(BaseModel):
     source_documents: list[str] = Field(..., min_length=1)
     num_questions: int = Field(10, ge=1, le=20)
     course_name: str | None = None
+    chat_id: str | None = None
+    user_id: str = "local"
 
 
 class QuestionOut(BaseModel):
@@ -91,18 +93,56 @@ class StatsOut(BaseModel):
     strong_questions: list[QuestionStatsOut]
 
 
+class TopicMasteryOut(BaseModel):
+    topic: str
+    score: int                 # 0–100, Anteil richtiger Antworten
+    correct: int
+    total: int
+    attempts: int
+    level: str                 # "stark" | "ok" | "schwach"
+    source_documents: list[str]
+
+
+class ProfileOut(BaseModel):
+    overall_score: int
+    total_answered: int
+    topics: list[TopicMasteryOut]
+    weak_topics: list[str]
+
+
+class WeaknessQuizRequest(BaseModel):
+    num_questions: int = Field(10, ge=1, le=20)
+
+
+# Schwelle, ab der ein Thema als "beherrscht" gilt
+_STRONG_THRESHOLD = 80
+_WEAK_THRESHOLD = 60
+
+
 # ---------------------------------------------------------------------------
 # Endpunkte
 # ---------------------------------------------------------------------------
 
 @router.post("/quiz/generate", response_model=QuizWithQuestionsOut, status_code=201)
 async def create_quiz(body: GenerateQuizRequest, db: AsyncSession = Depends(get_db)):
+    # Falls kein Modul-/Kursname gesetzt ist (z.B. sofort nach Upload generiert),
+    # das passende Modul aus dem Modulhandbuch ermitteln → korrekte Gruppierung im Profil.
+    course_name = (body.course_name or "").strip() or None
+    if not course_name:
+        try:
+            from app.services.curriculum_service import suggest_module
+            course_name = await suggest_module(body.source_documents, db, body.user_id)
+        except Exception:
+            course_name = None
+
     try:
         quiz, questions = await generate_quiz(
             source_documents=body.source_documents,
             num_questions=body.num_questions,
             db=db,
-            course_name=body.course_name,
+            course_name=course_name,
+            chat_id=body.chat_id,
+            user_id=body.user_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -276,4 +316,164 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         average_score=avg_score,
         weak_questions=weak,
         strong_questions=strong,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Profil: Themen-Beherrschung (Score 0–100 pro Kurs/Thema)
+# ---------------------------------------------------------------------------
+
+def _module_key(quiz: Quiz) -> str:
+    """Stabiler Gruppierungs-Schlüssel pro Modul.
+
+    Primär die Quelldokumente (gleiche Datei(en) = gleiches Modul), sonst der
+    Kursname, sonst der Titel. So erzeugen mehrere Quizze desselben Moduls EINEN
+    Profil-Eintrag, dessen Score sich aktualisiert — statt eines Eintrags je Quiz.
+    """
+    docs = sorted(quiz.source_documents or [])
+    if docs:
+        return "docs:" + "|".join(docs)
+    if quiz.course_name and quiz.course_name.strip():
+        return "course:" + quiz.course_name.strip().lower()
+    return "title:" + (quiz.title or "Allgemein").lower()
+
+
+def _clean_doc_name(name: str) -> str:
+    return name.rsplit(".", 1)[0].replace("_", " ").strip()
+
+
+async def _compute_topic_mastery(db: AsyncSession) -> list[dict]:
+    """Aggregiert die beantworteten Quizfragen pro MODUL (nicht pro Quiz).
+
+    Score = Anteil richtiger Antworten über alle Versuche des Moduls (0–100).
+    """
+    answers = (await db.execute(select(AttemptAnswer))).scalars().all()
+    if not answers:
+        return []
+
+    questions = (await db.execute(select(QuizQuestion))).scalars().all()
+    quiz_by_question = {q.id: q.quiz_id for q in questions}
+
+    quizzes = (await db.execute(select(Quiz))).scalars().all()
+    quiz_by_id = {q.id: q for q in quizzes}
+
+    # Pro Modul aggregieren (Schlüssel stabil über mehrere Quizze)
+    agg: dict[str, dict] = {}
+    for ans in answers:
+        quiz_id = quiz_by_question.get(ans.question_id)
+        quiz = quiz_by_id.get(quiz_id) if quiz_id else None
+        if quiz is None:
+            continue
+        key = _module_key(quiz)
+        a = agg.setdefault(key, {
+            "correct": 0, "total": 0, "quiz_ids": set(), "docs": set(), "course_names": [],
+        })
+        a["total"] += 1
+        if ans.is_correct:
+            a["correct"] += 1
+        a["quiz_ids"].add(quiz_id)
+        for d in (quiz.source_documents or []):
+            a["docs"].add(d)
+        if quiz.course_name and quiz.course_name.strip() and not quiz.course_name.startswith("Schwächen-Quiz"):
+            a["course_names"].append(quiz.course_name.strip())
+
+    topics: list[dict] = []
+    for a in agg.values():
+        # Anzeigename: Kursname (häufigster) > erstes Dokument > "Allgemein"
+        if a["course_names"]:
+            label = max(set(a["course_names"]), key=a["course_names"].count)
+        elif a["docs"]:
+            label = _clean_doc_name(sorted(a["docs"])[0])
+        else:
+            label = "Allgemein"
+        score = round(a["correct"] / a["total"] * 100) if a["total"] else 0
+        level = "stark" if score >= _STRONG_THRESHOLD else "ok" if score >= _WEAK_THRESHOLD else "schwach"
+        topics.append({
+            "topic": label,
+            "score": score,
+            "correct": a["correct"],
+            "total": a["total"],
+            "attempts": len(a["quiz_ids"]),
+            "level": level,
+            "source_documents": sorted(a["docs"]),
+        })
+    topics.sort(key=lambda t: t["score"])
+    return topics
+
+
+@router.get("/profile", response_model=ProfileOut)
+async def get_profile(db: AsyncSession = Depends(get_db)):
+    """Lernprofil: pro Thema ein Score 0–100, berechnet aus den Quiz-Ergebnissen."""
+    try:
+        topics = await _compute_topic_mastery(db)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")
+
+    total_answered = sum(t["total"] for t in topics)
+    total_correct = sum(t["correct"] for t in topics)
+    overall = round(total_correct / total_answered * 100) if total_answered else 0
+    weak_topics = [t["topic"] for t in topics if t["level"] == "schwach"]
+
+    return ProfileOut(
+        overall_score=overall,
+        total_answered=total_answered,
+        topics=[TopicMasteryOut(**t) for t in topics],
+        weak_topics=weak_topics,
+    )
+
+
+@router.delete("/stats", status_code=204)
+async def reset_stats(db: AsyncSession = Depends(get_db)):
+    """Setzt alle Quiz-Statistiken zurück (löscht Versuche + Antworten, behält Quizze)."""
+    try:
+        await db.execute(delete(AttemptAnswer))
+        await db.execute(delete(QuizAttempt))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="Zurücksetzen fehlgeschlagen.")
+
+
+@router.post("/quiz/weakness", response_model=QuizWithQuestionsOut, status_code=201)
+async def create_weakness_quiz(body: WeaknessQuizRequest, db: AsyncSession = Depends(get_db)):
+    """Erzeugt ein Quiz gezielt aus den schwachen Themen des Lernprofils."""
+    try:
+        topics = await _compute_topic_mastery(db)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")
+
+    weak = [t for t in topics if t["level"] == "schwach"]
+    if not weak:
+        # Kein schwaches Thema → das schwächste vorhandene nehmen
+        weak = topics[:1]
+    if not weak:
+        raise HTTPException(
+            status_code=422,
+            detail="Noch keine Quiz-Ergebnisse vorhanden. Mach zuerst ein paar Quizze.",
+        )
+
+    # Dokumente der schwachen Themen sammeln
+    docs = sorted({d for t in weak for d in t["source_documents"]})
+    if not docs:
+        raise HTTPException(
+            status_code=422,
+            detail="Für die schwachen Themen sind keine Quelldokumente mehr vorhanden.",
+        )
+
+    topic_names = ", ".join(t["topic"] for t in weak)
+    try:
+        quiz, questions = await generate_quiz(
+            source_documents=docs,
+            num_questions=body.num_questions,
+            db=db,
+            course_name=f"Schwächen-Quiz: {topic_names}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    return QuizWithQuestionsOut(
+        **QuizOut.model_validate(quiz).model_dump(),
+        questions=[QuestionOut.model_validate(q) for q in questions],
     )

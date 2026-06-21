@@ -16,6 +16,9 @@ class CalendarEvent(Base):
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Herkunft: "lsf" (aus dem LSF-Sync) oder "user" (selbst hinzugefügt).
+    # Der LSF-Sync ersetzt nur "lsf"-Events; eigene Termine bleiben erhalten.
+    source: Mapped[str] = mapped_column(String(16), default="lsf")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

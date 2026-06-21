@@ -9,11 +9,16 @@ Dieses Dokument erklärt den Aufbau des Backends und wie ihr es lokal zum Laufen
 | Komponente | Technologie |
 |---|---|
 | API Framework | FastAPI |
+| Agent-Framework | LangChain 1.x + LangGraph |
 | LLM | Google Gemini (`gemini-3.1-flash-lite-preview`) |
 | Datenbank (relational) | PostgreSQL 16 |
 | Vektordatenbank | ChromaDB |
 | RAG / Embeddings | `pypdf`, `langchain-text-splitters`, Gemini Embeddings |
 | Containerisierung | Docker |
+
+> **Multi-Agent-System:** Die fachliche Logik liegt in echten LangChain-Agents
+> (`app/agents/`), die autonom Tools aufrufen. Ein **Orchestrator** (Supervisor)
+> koordiniert die vier Spezial-Agents. Übersicht: [Root-README](../README.md#architektur).
 
 ---
 
@@ -26,34 +31,41 @@ backend/
 │   ├── core/
 │   │   ├── config.py              # Einstellungen & Umgebungsvariablen
 │   │   └── database.py            # SQLAlchemy Async Engine, get_db Dependency
+│   ├── agents/                    # ◀ Multi-Agent-System (LangChain 1.x / LangGraph)
+│   │   ├── base.py                # LLM-Factory + Output-Extraktion (gemeinsam)
+│   │   ├── orchestrator.py        # Supervisor: koordiniert & verkettet die 4 Agents
+│   │   ├── tutor_agent.py         # RAG-Q&A + Quiz-Generierung (Structured Output)
+│   │   ├── evaluator_agent.py     # Wissenslücken-Analyse aus Quiz-Ergebnissen
+│   │   ├── planner_agent.py       # Lernpläne aus Kalender + Deadlines + Noten
+│   │   └── career_agent.py        # Job-/Skill-Analyse aus dem Notenprofil
 │   ├── models/
 │   │   ├── academic_event.py      # Planner-Deadlines (Prüfungen, Abgaben, Präsentationen)
 │   │   ├── attempt_answer.py      # Einzelantworten eines Quiz-Versuchs
-│   │   ├── calendar_event.py      # Stundenplan-Einträge (aus .ics importiert)
+│   │   ├── calendar_event.py      # Stundenplan-Einträge (aus LSF-Mock)
 │   │   ├── chat.py                # ChatMessage (Prompt-Verlauf)
 │   │   ├── document.py            # Hochgeladene PDFs
 │   │   ├── exam.py                # Prüfungstermine
 │   │   ├── grade.py               # Noteneinträge
 │   │   ├── quiz.py                # Generierte Quizze
 │   │   ├── quiz_attempt.py        # Quiz-Versuche mit Score
-│   │   ├── quiz_question.py       # Einzelne Quizfragen (MC / TF)
-│   │   ├── quiz_result.py         # Einfache Quiz-Ergebnisse (Legacy)
-│   │   └── study_plan.py          # Lernpläne
+│   │   └── quiz_question.py       # Einzelne Quizfragen (MC / TF)
 │   ├── api/v1/
-│   │   ├── prompt.py              # POST /api/prompt (Streaming-Chat)
+│   │   ├── prompt.py              # POST /api/prompt (Orchestrator-Chat, Streaming)
 │   │   ├── upload.py              # POST /api/upload, GET /api/documents
 │   │   ├── history.py             # GET /api/history
-│   │   ├── exams.py               # CRUD /api/exams
-│   │   ├── calendar.py            # CRUD /api/calendar/events
-│   │   ├── grades.py              # POST /api/grades/upload (→ n8n)
-│   │   ├── job_agent.py           # POST /api/job-agent/run (→ n8n)
-│   │   ├── planner.py             # CRUD /api/planner/events
-│   │   ├── study_advisor.py       # POST /api/ai/study-advisor
+│   │   ├── lsf_mock.py            # ◀ LSF-Mock: /api/lsf/* (Module, Noten, Termine, Sync)
+│   │   ├── exams.py               # GET /api/exams (read-only)
+│   │   ├── calendar.py            # GET /api/calendar/events (read-only)
+│   │   ├── grades.py              # GET /api/grades (read-only)
+│   │   ├── planner.py             # GET /api/planner/events (read-only)
+│   │   ├── study_advisor.py       # POST /api/ai/study-advisor → PlannerAgent
+│   │   ├── evaluator.py           # /api/ai/evaluate, /api/ai/knowledge-gaps → EvaluatorAgent
+│   │   ├── career.py              # GET /api/career/analysis → CareerAgent
 │   │   └── tutor.py               # /api/tutor/* (Quiz-Generierung & Auswertung)
 │   ├── services/
-│   │   ├── planner_service.py     # Prioritäts-Berechnung für Events
-│   │   ├── study_advisor_service.py  # KI-Lernberatung via Gemini + RAG
-│   │   └── tutor_service.py       # Quiz-Generierung via Gemini + RAG
+│   │   ├── lsf_sync.py            # ◀ LSF-Mock → DB-Tabellen (idempotent)
+│   │   ├── planner_service.py     # Prioritäts-Berechnung für Events (von PlannerAgent genutzt)
+│   │   └── tutor_service.py       # Brücke: validiert & speichert Quiz vom TutorAgent
 │   └── rag/
 │       ├── store.py               # ChromaDB-Client & Gemini-Embedding-Hilfsklassen
 │       ├── pipeline.py            # PDF → Text → Chunks → Embeddings → ChromaDB
@@ -92,10 +104,9 @@ cp backend/.env.example backend/.env
 
 ```
 GEMINI_API_KEY=AIza...
-POSTGRES_URL=postgresql+asyncpg://agent_user:agent_pass@localhost:5432/agent_db
+POSTGRES_URL=postgresql+asyncpg://agent_user:agent_pass@localhost:5433/agent_db
 CHROMA_HOST=localhost
 CHROMA_PORT=8000
-N8N_JOB_AGENT_WEBHOOK_URL=http://...   # optional, für Job-Agent
 ```
 
 > ⚠️ Die `.env` Datei niemals ins Git committen.
@@ -115,7 +126,8 @@ source .venv/bin/activate
 cd backend && uvicorn app.main:app --reload --port 8080
 ```
 
-Beim ersten Start legt `create_all` alle Tabellen automatisch an.
+Beim ersten Start legt `create_all` alle Tabellen automatisch an und der
+**LSF-Auto-Seed** befüllt sie mit Noten, Terminen, Prüfungen und Stundenplan.
 
 ---
 
@@ -126,46 +138,72 @@ Beim ersten Start legt `create_all` alle Tabellen automatisch an.
 | Methode | URL | Beschreibung |
 |---|---|---|
 | `GET` | `/health` | Statuscheck |
-| `POST` | `/api/prompt` | Streaming-Chat mit Gemini + RAG |
+| `POST` | `/api/prompt` | Streaming-Chat über den **Orchestrator** (routet zu allen Agents) |
 | `POST` | `/api/upload` | PDF hochladen, RAG-Pipeline anstoßen |
 | `GET` | `/api/documents` | Liste aller hochgeladenen Dokumente (Dateinamen) |
 | `GET` | `/api/history` | Letzte 50 Chat-Nachrichten |
 
-### Kalender
+### LSF-Mock (Datenquelle für Noten & Termine)
 
 | Methode | URL | Beschreibung |
 |---|---|---|
-| `GET` | `/api/calendar/events` | Alle Stundenplan-Einträge |
-| `POST` | `/api/calendar/events` | Batch-Upsert (aus n8n .ics-Verarbeitung) |
-| `DELETE` | `/api/calendar/events` | Alle Events löschen |
-| `DELETE` | `/api/calendar/events/{id}` | Einzelnes Event löschen |
+| `GET` | `/api/lsf/modules` | Belegte Module (Stammdaten) |
+| `GET` | `/api/lsf/grades` | Noten der abgeschlossenen Module |
+| `GET` | `/api/lsf/termine` | Alle Termine (Vorlesungen, Prüfungen, Abgaben, Präsentationen) |
+| `GET` | `/api/lsf/exams` | Nur Prüfungstermine |
+| `POST` | `/api/lsf/sync` | LSF-Daten idempotent in die DB übernehmen |
 
-### Planner
+### Read-only Anzeige (aus DB, befüllt durch LSF-Sync)
 
 | Methode | URL | Beschreibung |
 |---|---|---|
+| `GET` | `/api/grades` | Noten |
+| `GET` | `/api/calendar/events` | Stundenplan-Einträge |
 | `GET` | `/api/planner/events` | Alle Deadlines |
 | `GET` | `/api/planner/events/upcoming` | Nur zukünftige Deadlines |
-| `POST` | `/api/planner/events` | Neue Deadline anlegen (EXAM / ASSIGNMENT / PRESENTATION) |
-| `DELETE` | `/api/planner/events/{id}` | Deadline löschen |
+| `GET` | `/api/exams` | Prüfungstermine |
 
 ### KI-Dienste
 
-| Methode | URL | Beschreibung |
+| Methode | URL | Agent / Beschreibung |
 |---|---|---|
-| `POST` | `/api/ai/study-advisor` | Lernberatung basierend auf Planner + Kalender |
-| `POST` | `/api/grades/upload` | Notenübersicht-PDF → n8n → strukturierte Daten |
-| `POST` | `/api/job-agent/run` | Job-Suche via n8n-Webhook starten |
+| `POST` | `/api/ai/study-advisor` | **PlannerAgent** — Lernplan aus Planner + Kalender + Noten |
+| `POST` | `/api/ai/evaluate` | **EvaluatorAgent** — konversationelle Lernfortschritts-Analyse |
+| `GET` | `/api/ai/knowledge-gaps` | **EvaluatorAgent** — vollständige Wissenslücken-Analyse |
+| `GET` | `/api/career/analysis` | **CareerAgent** — strukturierte Job-/Skill-Analyse (Structured Output) |
 
 ### Tutor (Quiz)
 
 | Methode | URL | Beschreibung |
 |---|---|---|
 | `POST` | `/api/tutor/quiz/generate` | Quiz aus hochgeladenen Dokumenten generieren |
+| `POST` | `/api/tutor/quiz/weakness` | **Schwächen-Quiz** aus den schwachen Themen des Profils |
 | `GET` | `/api/tutor/quizzes` | Alle gespeicherten Quizze |
 | `GET` | `/api/tutor/quiz/{id}` | Einzelnes Quiz mit Fragen laden |
 | `POST` | `/api/tutor/quiz/{id}/submit` | Antworten einreichen, Score berechnen |
 | `GET` | `/api/tutor/stats` | Stärken/Schwächen-Analyse über alle Versuche |
+| `DELETE` | `/api/tutor/stats` | **Statistiken zurücksetzen** (Versuche + Antworten löschen) |
+| `GET` | `/api/tutor/profile` | **Lernprofil**: pro Thema ein Score 0–100 aus den Quiz-Ergebnissen |
+
+### Career & CV
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `GET` | `/api/career/analysis` | KI-Karriereanalyse (Noten + optional CV) |
+| `POST` | `/api/career/cv` | **Lebenslauf (PDF) hochladen** → Text fließt in die Analyse ein |
+| `GET` / `DELETE` | `/api/career/cv` | CV-Status / CV entfernen |
+
+### Moodle (HTW, optional — Token nötig)
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `GET` | `/api/moodle/status` | Ob ein Moodle-Token konfiguriert ist |
+| `GET` | `/api/moodle/courses` | Belegte Kurse, nach Semester sortiert |
+| `POST` | `/api/moodle/index` | Materialien eines Kurses on-demand in die RAG indizieren |
+
+> Der Tutor-Agent nutzt Moodle **automatisch**: findet er in den hochgeladenen
+> Dokumenten nichts, listet er die belegten Kurse, indiziert den passenden Kurs
+> und sucht erneut. Token in `backend/.env` als `MOODLE_TOKEN` hinterlegen.
 
 ---
 
@@ -195,4 +233,3 @@ Beim Hochladen einer PDF läuft automatisch im Hintergrund:
 | `RAG_CHUNK_SIZE` | – | Chunk-Größe in Zeichen (Standard: `1000`) |
 | `RAG_CHUNK_OVERLAP` | – | Überlappung in Zeichen (Standard: `150`) |
 | `RAG_TOP_K` | – | Anzahl RAG-Treffer für Chat (Standard: `4`) |
-| `N8N_JOB_AGENT_WEBHOOK_URL` | – | n8n Webhook für Job-Suche |

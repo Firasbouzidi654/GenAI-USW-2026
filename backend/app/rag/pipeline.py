@@ -56,15 +56,22 @@ def _chunk_text(text: str) -> list[str]:
         return [text[i : i + size] for i in range(0, len(text), step) if text[i : i + size].strip()]
 
 
-def _doc_id(filename: str, chunk_index: int, content: str) -> str:
+def _doc_id(filename: str, chunk_index: int, content: str, chat_id: str | None) -> str:
     digest = hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()[:8]
-    return f"{filename}::{chunk_index}::{digest}"
+    scope = chat_id or "global"
+    return f"{scope}::{filename}::{chunk_index}::{digest}"
 
 
-def process_document_sync(file_path: str) -> None:
+def process_document_sync(
+    file_path: str,
+    chat_id: str | None = None,
+    user_id: str = "local",
+) -> None:
     """Synchronous pipeline — called by BackgroundTasks (runs in a thread pool).
 
     Steps: extract text → chunk → embed via Gemini → upsert into ChromaDB.
+    Jeder Chunk erhält ``chat_id`` und ``user_id`` als Metadaten, damit die
+    Dokumente verschiedener Chats/Nutzer in der Vektor-DB getrennt bleiben.
     Never raises; failures are logged so the upload response is never blocked.
     """
     path = Path(file_path)
@@ -96,8 +103,16 @@ def process_document_sync(file_path: str) -> None:
         return
 
     filename = path.name
-    ids = [_doc_id(filename, i, chunk) for i, chunk in enumerate(chunks)]
-    metadatas = [{"source": filename, "chunk": i} for i in range(len(chunks))]
+    ids = [_doc_id(filename, i, chunk, chat_id) for i, chunk in enumerate(chunks)]
+    metadatas = [
+        {
+            "source": filename,
+            "chunk": i,
+            "chat_id": chat_id or "",
+            "user_id": user_id or "local",
+        }
+        for i in range(len(chunks))
+    ]
 
     try:
         collection.upsert(
@@ -106,12 +121,64 @@ def process_document_sync(file_path: str) -> None:
             embeddings=embeddings,
             metadatas=metadatas,
         )
-        logger.info("Indexiert: %s (%d Chunks)", filename, len(chunks))
+        logger.info("Indexiert: %s (%d Chunks, chat=%s)", filename, len(chunks), chat_id)
     except Exception as exc:
         logger.warning("Speichern in ChromaDB fehlgeschlagen: %s", exc)
 
 
-async def process_document(file_path: str) -> None:
+async def process_document(
+    file_path: str, chat_id: str | None = None, user_id: str = "local"
+) -> None:
     """Async wrapper kept for backwards compatibility."""
     import asyncio
-    await asyncio.to_thread(process_document_sync, file_path)
+    await asyncio.to_thread(process_document_sync, file_path, chat_id, user_id)
+
+
+def index_text(
+    filename: str,
+    text: str,
+    chat_id: str | None = None,
+    user_id: str = "local",
+    extra_meta: dict | None = None,
+) -> int:
+    """Indexiert bereits extrahierten Text in ChromaDB (z.B. aus einem Moodle-Download).
+
+    Returns die Anzahl gespeicherter Chunks (0 bei Fehlern/leerem Text).
+    """
+    if not text or not text.strip():
+        return 0
+
+    chunks = _chunk_text(text)
+    if not chunks:
+        return 0
+
+    embeddings = embed_texts(chunks)
+    if not embeddings or len(embeddings) != len(chunks):
+        logger.warning("Embeddings für %s konnten nicht erzeugt werden.", filename)
+        return 0
+
+    collection = get_collection()
+    if collection is None:
+        logger.warning("ChromaDB nicht verfügbar — %s nicht indexiert.", filename)
+        return 0
+
+    ids = [_doc_id(filename, i, chunk, chat_id) for i, chunk in enumerate(chunks)]
+    metadatas = []
+    for i in range(len(chunks)):
+        meta = {
+            "source": filename,
+            "chunk": i,
+            "chat_id": chat_id or "",
+            "user_id": user_id or "local",
+        }
+        if extra_meta:
+            meta.update(extra_meta)
+        metadatas.append(meta)
+
+    try:
+        collection.upsert(ids=ids, documents=chunks, embeddings=embeddings, metadatas=metadatas)
+        logger.info("Indexiert (Text): %s (%d Chunks, chat=%s)", filename, len(chunks), chat_id)
+        return len(chunks)
+    except Exception as exc:
+        logger.warning("Speichern in ChromaDB fehlgeschlagen (%s): %s", filename, exc)
+        return 0

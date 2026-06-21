@@ -1,25 +1,49 @@
+"""Planner-Endpunkt.
+
+Liest die Deadlines (aus dem LSF-Mock) und erzeugt auf Wunsch über den PlannerAgent
+einen konkreten, zeitlich geblockten Lernplan (berücksichtigt Vorlesungen, eigene
+Termine und Deadlines).
+"""
+
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
+from app.agents.planner_agent import run_planner_agent
 from app.core.database import get_db
 from app.models.academic_event import AcademicEvent
 from app.services.planner_service import get_event_priority
 
 router = APIRouter()
 
-VALID_TYPES = {"EXAM", "ASSIGNMENT", "PRESENTATION"}
+
+class StudyPlanRequest(BaseModel):
+    horizon_days: int = 7
 
 
-class AcademicEventIn(BaseModel):
-    title: str
-    course_name: str
-    type: str
-    date: date
-    description: str | None = None
+class StudyPlanResponse(BaseModel):
+    plan: str
+
+
+_STUDY_PLAN_PROMPT = (
+    "Erstelle mir einen konkreten, zeitlich geblockten Lernplan für die nächsten "
+    "{days} Tage. Sage mir für jeden Tag genau: zu welcher UHRZEIT, WIE LANGE und WAS "
+    "ich lernen soll (in Lernblöcken, z.B. 'Di 16:00–17:30 Datenbanken wiederholen'). "
+    "Berücksichtige meine Vorlesungen/Übungen und meine eigenen Termine als bereits "
+    "belegte Zeiten (NICHT überschneiden) und priorisiere nach den anstehenden Deadlines. "
+    "Plane realistische Pausen ein. Gib das Ergebnis als übersichtliche Liste pro Tag aus."
+)
+
+
+@router.post("/planner/study-plan", response_model=StudyPlanResponse)
+async def create_study_plan(body: StudyPlanRequest, db: AsyncSession = Depends(get_db)):
+    """Generiert einen zeitlich geblockten Lernplan über den PlannerAgent."""
+    days = max(1, min(body.horizon_days, 21))
+    plan = await run_planner_agent(_STUDY_PLAN_PROMPT.format(days=days), db)
+    return {"plan": plan}
 
 
 class AcademicEventOut(BaseModel):
@@ -50,26 +74,6 @@ def _enrich(event: AcademicEvent) -> dict:
     }
 
 
-@router.post("/planner/events", response_model=AcademicEventOut, status_code=201)
-async def create_event(body: AcademicEventIn, db: AsyncSession = Depends(get_db)):
-    if body.type not in VALID_TYPES:
-        raise HTTPException(status_code=422, detail=f"type must be one of {sorted(VALID_TYPES)}.")
-    try:
-        event = AcademicEvent(
-            title=body.title.strip(),
-            course_name=body.course_name.strip(),
-            type=body.type,
-            date=body.date,
-            description=body.description,
-        )
-        db.add(event)
-        await db.commit()
-        await db.refresh(event)
-        return _enrich(event)
-    except Exception:
-        raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")
-
-
 @router.get("/planner/events", response_model=list[AcademicEventOut])
 async def get_events(db: AsyncSession = Depends(get_db)):
     try:
@@ -89,22 +93,5 @@ async def get_upcoming_events(db: AsyncSession = Depends(get_db)):
             .order_by(AcademicEvent.date)
         )
         return [_enrich(e) for e in result.scalars().all()]
-    except Exception:
-        raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")
-
-
-@router.delete("/planner/events/{event_id}", status_code=204)
-async def delete_event(event_id: int, db: AsyncSession = Depends(get_db)):
-    try:
-        result = await db.execute(
-            select(AcademicEvent).where(AcademicEvent.id == event_id)
-        )
-        event = result.scalar_one_or_none()
-        if event is None:
-            raise HTTPException(status_code=404, detail="Event nicht gefunden.")
-        await db.delete(event)
-        await db.commit()
-    except HTTPException:
-        raise
     except Exception:
         raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")

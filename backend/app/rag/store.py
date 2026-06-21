@@ -77,6 +77,24 @@ def embed_texts(texts: Iterable[str]) -> list[list[float]]:
         return []
 
 
+def clear_collection() -> bool:
+    """Löscht ALLE Chunks aus der Collection. Gibt True bei Erfolg zurück."""
+    global _chroma_client, _collection
+    try:
+        client = _chroma_client
+        if client is None:
+            get_collection()
+            client = _chroma_client
+        if client is None:
+            return False
+        client.delete_collection(name=settings.chroma_collection)
+        _collection = None  # beim nächsten Zugriff neu (leer) anlegen
+        return True
+    except Exception as exc:
+        logger.warning("ChromaDB-Collection konnte nicht geleert werden: %s", exc)
+        return False
+
+
 def reset_state() -> None:
     """Nur für Tests: Singletons zurücksetzen."""
     global _chroma_client, _collection, _genai_client

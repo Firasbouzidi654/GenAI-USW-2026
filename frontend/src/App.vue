@@ -1,107 +1,214 @@
 <template>
   <div :class="['app', { dark: isDark }]" @click="closePanel">
 
-    <!-- NAV BAR -->
-    <nav class="navbar" @click.stop>
-      <span class="nav-logo">✦ AI Agent</span>
+    <!-- SIDEBAR -->
+    <aside class="sidebar" @click.stop>
+      <div class="sidebar-header">
+        <span class="nav-logo">✦ AI Agent</span>
+        <button class="theme-btn" @click.stop="toggleDark" :title="isDark ? 'Heller Modus' : 'Dunkler Modus'">
+          <UiIcon :name="isDark ? 'brightness' : 'moon'" :fallback="isDark ? '☀️' : '🌙'" cls="theme-icon-img" />
+        </button>
+      </div>
+
+      <button
+        @click.stop="newChat"
+        class="sidebar-btn sidebar-newchat"
+        title="Neuen Chat starten (eigene Dokumente, getrennt vom bisherigen Verlauf)"
+      >
+        ＋ Neuer Chat
+      </button>
+      <button
+        @click.stop="syncLsf"
+        :disabled="lsfSyncing"
+        class="sidebar-btn sidebar-sync"
+        title="Noten, Termine, Prüfungen und Kalender aus dem LSF neu laden"
+      >
+        <UiIcon name="back-up" fallback="🔄" cls="lsf-sync-icon" />
+        {{ lsfSyncing ? 'Synchronisiere…' : 'LSF synchronisieren' }}
+      </button>
+      <span v-if="lsfSyncStatus" :class="['lsf-sync-status', lsfSyncStatus.type]">{{ lsfSyncStatus.message }}</span>
+
+      <p class="sidebar-section-label">Bereiche</p>
       <div class="nav-items">
         <div v-for="item in navItems" :key="item.id" class="nav-item">
           <button
             @click="togglePanel(item.id)"
             :class="['nav-btn', { active: activePanel === item.id }]"
           >
-            {{ item.icon }} {{ item.label }}
+            <UiIcon :name="item.iconName" :fallback="item.icon" cls="nav-icon-img" />
+            {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--wide': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'sprachtutor' || item.id === 'career', 'dropdown--focus-full': item.id === 'focus-time' }]">
+          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--calendar': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'career' || item.id === 'profil' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
             </ul>
-            <div v-if="item.id === 'career'" class="job-agent-section">
-              <button
-                @click.stop="launchJobAgent"
-                :disabled="jobAgentLoading"
-                class="job-agent-btn"
-              >
-                {{ jobAgentLoading ? '⏳ Launching...' : '🚀 Launch Job Search Agent' }}
-              </button>
-              <p v-if="jobAgentStatus" :class="['job-agent-status', jobAgentStatus.type]">
-                {{ jobAgentStatus.message }}
-              </p>
-            </div>
-
             <div v-if="item.id === 'career'" class="career-section">
               <div class="career-toolbar">
-                <span class="career-toolbar-title">Career Profile</span>
+                <span class="career-toolbar-title">Karriere-Profil</span>
                 <button
                   @click.stop="fetchCareerAnalysis"
                   :disabled="careerLoading"
                   class="kalender-clear-btn"
                   title="Neu berechnen"
-                >🔄</button>
+                ><UiIcon name="refresh" fallback="🔄" /></button>
               </div>
 
+              <!-- CV / Lebenslauf-Upload -->
+              <div class="cv-bar">
+                <label class="cv-upload-label">
+                  <UiIcon name="clip" fallback="📎" />
+                  {{ cvUploading ? 'Lädt…' : (cvStatus && cvStatus.has_cv ? 'CV ersetzen' : 'Lebenslauf hochladen') }}
+                  <input type="file" accept=".pdf" @change="uploadCv" :disabled="cvUploading" hidden />
+                </label>
+                <span v-if="cvStatus && cvStatus.has_cv" class="cv-filename" :title="cvStatus.filename">
+                  ✓ {{ cvStatus.filename }}
+                </span>
+                <button
+                  v-if="cvStatus && cvStatus.has_cv"
+                  @click.stop="deleteCv"
+                  class="cv-delete-btn"
+                  title="CV entfernen"
+                >✕</button>
+              </div>
+              <p v-if="cvStatus && cvStatus.has_cv" class="cv-hint">
+                Dein Lebenslauf fließt in die Analyse ein. „Neu berechnen" für ein aktualisiertes Ergebnis.
+              </p>
+
               <div class="career-scroll">
-              <div v-if="careerLoading" class="career-empty">🤖 AI is analyzing your academic profile...</div>
+              <div v-if="careerLoading" class="career-empty"><UiIcon name="robot" fallback="🤖" /> Die KI analysiert dein akademisches Profil…</div>
               <div v-else-if="careerError" class="career-empty">{{ careerError }}</div>
               <div v-else-if="!careerAnalysis || !careerAnalysis.has_data" class="career-empty">
-                Upload your Noten PDF first to get a personalized career analysis.
+                Synchronisiere zuerst deine Noten (oder lade einen Lebenslauf hoch), um eine persönliche Karriereanalyse zu erhalten.
               </div>
               <template v-else>
-                <span class="career-source-badge">✨ AI Analysis</span>
+                <span class="career-source-badge"><UiIcon name="sparkle" fallback="✨" /> KI-Analyse</span>
+
+                <!-- DATENBASIS: was fließt in die Analyse ein -->
+                <div v-if="careerAnalysis.data_sources" class="career-datasources">
+                  <p class="career-ds-title">Datenbasis dieser Analyse</p>
+                  <div class="career-ds-chips">
+                    <span class="career-ds-chip on">
+                      <UiIcon name="graduation-cap" fallback="🎓" /> {{ careerAnalysis.data_sources.grades_count }} Module (Noten)
+                    </span>
+                    <span :class="['career-ds-chip', careerAnalysis.data_sources.has_cv ? 'on' : 'off']">
+                      <UiIcon name="clip" fallback="📎" /> Lebenslauf: {{ careerAnalysis.data_sources.has_cv ? 'ja' : 'nein' }}
+                    </span>
+                    <span :class="['career-ds-chip', careerAnalysis.data_sources.quiz_topics_count ? 'on' : 'off']">
+                      <UiIcon name="web-test" fallback="🧠" />
+                      {{ careerAnalysis.data_sources.quiz_topics_count }} Quiz-Themen
+                      <template v-if="careerAnalysis.data_sources.quiz_topics_count"> · Ø {{ careerAnalysis.data_sources.quiz_avg_score }}%</template>
+                    </span>
+                  </div>
+                  <div v-if="careerAnalysis.data_sources.quiz_topics.length" class="career-ds-quiz">
+                    <span class="career-ds-quiz-label">Quiz-bestätigte Themen:</span>
+                    <span
+                      v-for="t in careerAnalysis.data_sources.quiz_topics"
+                      :key="t.topic"
+                      :class="['career-ds-quiz-tag', 'plevel-' + t.level]"
+                      :title="t.level"
+                    >{{ t.topic }} · {{ t.score }}%</span>
+                  </div>
+                  <p v-else class="career-ds-hint">
+                    Noch keine Quiz-Daten — mach Quizze im Quiz-Tab, dann fließen deine nachgewiesenen Stärken hier mit ein.
+                  </p>
+                </div>
 
                 <p v-if="careerAnalysis.summary" class="career-summary-text">{{ careerAnalysis.summary }}</p>
 
                 <div v-if="bestCareerMatch" class="career-spotlight">
-                  <p class="career-roles-title">🏆 Best Career Match</p>
+                  <p class="career-roles-title"><UiIcon name="trophy" fallback="🏆" /> Bester Job-Match</p>
                   <div class="career-spotlight-card">
                     <div class="career-spotlight-header">
-                      <span class="career-spotlight-title">🥇 {{ bestCareerMatch.title }}</span>
-                      <span class="career-spotlight-match">{{ bestCareerMatch.match_percent }}% Match</span>
+                      <span class="career-spotlight-title"><UiIcon name="medal" fallback="🥇" /> {{ bestCareerMatch.title }}</span>
+                      <span class="career-spotlight-match">{{ bestCareerMatch.match_percent }}% Übereinstimmung</span>
                     </div>
                     <p class="career-spotlight-reason">{{ bestCareerMatch.reason }}</p>
 
                     <div class="career-spotlight-row">
-                      <span class="career-spotlight-row-label">💼 Average Salary (Germany)</span>
-                      <span class="career-spotlight-row-value">{{ bestCareerMatch.salary_range_eur || 'Not available' }}</span>
+                      <span class="career-spotlight-row-label"><UiIcon name="salary" fallback="💼" /> Werkstudenten-Vergütung</span>
+                      <span class="career-spotlight-row-value">{{ bestCareerMatch.salary_range_eur || 'Nicht verfügbar' }}</span>
                     </div>
                     <div class="career-spotlight-row">
-                      <span class="career-spotlight-row-label">📈 Market Demand</span>
-                      <span class="career-spotlight-row-value">{{ marketDemandStars(bestCareerMatch.market_demand) }} {{ bestCareerMatch.market_demand }}</span>
+                      <span class="career-spotlight-row-label"><UiIcon name="trend-up" fallback="📈" /> Marktnachfrage</span>
+                      <span class="career-spotlight-row-value">{{ marketDemandStars(bestCareerMatch.market_demand) }} {{ demandLabel(bestCareerMatch.market_demand) }}</span>
                     </div>
 
                     <div v-if="bestCareerMatch.missing_skills.length" class="career-spotlight-block">
-                      <span class="career-spotlight-block-label">❌ Missing Skills</span>
+                      <span class="career-spotlight-block-label">Fehlende Skills</span>
                       <ul class="career-role-tag-list">
-                        <li v-for="(skill, mi) in bestCareerMatch.missing_skills" :key="mi">{{ skillIcon(skill) }} {{ skill }}</li>
+                        <li v-for="(skill, mi) in bestCareerMatch.missing_skills" :key="mi">{{ skill }}</li>
                       </ul>
                     </div>
 
                     <div v-if="bestCareerMatch.recommended_certifications.length" class="career-spotlight-block">
-                      <span class="career-spotlight-block-label">🎓 Recommended Certifications</span>
+                      <span class="career-spotlight-block-label"><UiIcon name="certificate" fallback="🎓" /> Empfohlene Zertifikate</span>
                       <ul class="career-role-list">
                         <li v-for="(cert, ci) in bestCareerMatch.recommended_certifications" :key="ci">{{ cert }}</li>
                       </ul>
                     </div>
 
                     <div v-if="bestCareerMatch.recommended_projects.length" class="career-spotlight-block">
-                      <span class="career-spotlight-block-label">🚀 Recommended Portfolio Projects</span>
+                      <span class="career-spotlight-block-label"><UiIcon name="rocket" fallback="🚀" /> Empfohlene Portfolio-Projekte</span>
                       <ul class="career-role-list">
                         <li v-for="(proj, pi) in bestCareerMatch.recommended_projects" :key="pi">{{ proj }}</li>
                       </ul>
                     </div>
 
-                    <p class="career-disclaimer">🤖 AI-generated estimate based on your transcript — not a guaranteed fact.</p>
+                    <p class="career-disclaimer"><UiIcon name="robot" fallback="🤖" /> KI-generierte Schätzung auf Basis deines Notenspiegels — keine garantierte Tatsache.</p>
                   </div>
                 </div>
 
+                <!-- VORGEFILTERTE PORTAL-SUCHEN (Werkstudent) -->
+                <div v-if="bestCareerMatch && bestCareerMatch.search_links && bestCareerMatch.search_links.length" class="career-portals">
+                  <p class="career-portals-label">Vorgefilterte Werkstudent-Suche für „{{ bestCareerMatch.title }}":</p>
+                  <div class="career-portals-btns">
+                    <a
+                      v-for="link in bestCareerMatch.search_links"
+                      :key="link.portal"
+                      :href="link.url"
+                      target="_blank"
+                      rel="noopener"
+                      class="career-portal-btn"
+                    >{{ link.portal }} ↗</a>
+                  </div>
+                </div>
+
+                <!-- ECHTE WERKSTUDENTENSTELLEN -->
+                <div v-if="careerAnalysis.jobs && careerAnalysis.jobs.length" class="career-jobs">
+                  <p class="career-jobs-title"><UiIcon name="briefcase" fallback="💼" /> Aktuelle Werkstudentenstellen <span class="career-jobs-source">via {{ careerAnalysis.job_source }}</span></p>
+                  <a
+                    v-for="(job, ji) in careerAnalysis.jobs"
+                    :key="ji"
+                    :href="job.url"
+                    target="_blank"
+                    rel="noopener"
+                    class="career-job-card"
+                  >
+                    <div class="career-job-top">
+                      <span class="career-job-title">{{ job.title }}</span>
+                      <span v-if="job.salary" class="career-job-salary">{{ job.salary }}</span>
+                    </div>
+                    <div class="career-job-meta">
+                      <span v-if="job.company">{{ job.company }}</span>
+                      <span v-if="job.location">· {{ job.location }}</span>
+                      <span v-if="job.remote" class="career-job-remote">· Remote</span>
+                    </div>
+                  </a>
+                </div>
+                <p v-else-if="bestCareerMatch" class="career-jobs-empty">
+                  Über die freie Quelle ({{ careerAnalysis.job_source }}) wurden gerade keine
+                  passenden Werkstudentenstellen gefunden — nutze die Buttons oben für aktuelle
+                  Werkstudentenstellen auf LinkedIn, StepStone &amp; Indeed.
+                </p>
+
                 <div class="career-metrics">
                   <div class="career-metric-card">
-                    <span class="career-metric-label">🎯 Job Fit</span>
+                    <span class="career-metric-label"><UiIcon name="target" fallback="🎯" /> Job-Eignung</span>
                     <span class="career-metric-value">{{ careerAnalysis.job_fit_percent }}%</span>
                   </div>
                   <div class="career-metric-card">
-                    <span class="career-metric-label">🤖 AI Confidence</span>
+                    <span class="career-metric-label"><UiIcon name="robot" fallback="🤖" /> KI-Konfidenz</span>
                     <span class="career-metric-value">{{ careerAnalysis.confidence_percent }}%</span>
                   </div>
                 </div>
@@ -117,7 +224,7 @@
                     </div>
                     <p class="career-skill-reason">{{ skill.reason }}</p>
                     <div v-if="skill.matched_courses.length" class="career-skill-courses">
-                      <span class="career-skill-courses-label">Based on:</span>
+                      <span class="career-skill-courses-label">Basierend auf:</span>
                       <ul>
                         <li v-for="(c, ci) in skill.matched_courses" :key="ci">
                           ✓ {{ c.course_name }}<span v-if="c.grade"> ({{ c.grade }})</span>
@@ -129,56 +236,67 @@
 
                 <div v-if="careerAnalysis.strengths.length || careerAnalysis.weak_areas.length" class="career-summary">
                   <p v-if="careerAnalysis.strengths.length" class="career-summary-line">
-                    <strong>💪 Strengths:</strong> {{ careerAnalysis.strengths.join(', ') }}
+                    <strong><UiIcon name="strength" fallback="💪" /> Stärken:</strong> {{ careerAnalysis.strengths.join(', ') }}
                   </p>
                   <p v-if="careerAnalysis.weak_areas.length" class="career-summary-line">
-                    <strong>📉 Weak areas:</strong> {{ careerAnalysis.weak_areas.join(', ') }}
+                    <strong><UiIcon name="trend-down" fallback="📉" /> Schwächen:</strong> {{ careerAnalysis.weak_areas.join(', ') }}
                   </p>
                 </div>
 
                 <div class="career-roles">
                   <p class="career-roles-title">Empfohlene Rollen</p>
                   <p class="career-disclaimer">
-                    🤖 AI-generated recommendations based on your transcript — not guaranteed facts. Verify certifications and requirements before relying on them.
+                    <UiIcon name="robot" fallback="🤖" /> KI-generierte Empfehlungen auf Basis deines Notenspiegels — keine garantierten Tatsachen. Prüfe Zertifikate und Anforderungen, bevor du dich darauf verlässt.
                   </p>
                   <div v-for="role in careerAnalysis.roles" :key="role.title" class="career-role-card">
                     <div class="career-role-header">
                       <span class="career-role-title">{{ role.title }}</span>
-                      <span class="career-role-match">{{ role.match_percent }}% Match</span>
+                      <span class="career-role-match">{{ role.match_percent }}% Übereinstimmung</span>
                     </div>
                     <div class="career-role-demand">
-                      <span class="career-role-demand-label">Market Demand</span>
+                      <span class="career-role-demand-label">Marktnachfrage</span>
                       <span :class="['career-demand-badge', 'career-demand-' + role.market_demand.toLowerCase().replace(' ', '-')]">
-                        {{ marketDemandIcon(role.market_demand) }} {{ role.market_demand }}
+                        {{ demandLabel(role.market_demand) }}
                       </span>
                     </div>
                     <p class="career-role-reason">{{ role.reason }}</p>
 
                     <div v-if="role.missing_skills.length" class="career-role-block">
-                      <span class="career-role-block-label">🧩 Missing Skills</span>
+                      <span class="career-role-block-label">Fehlende Skills</span>
                       <ul class="career-role-tag-list">
                         <li v-for="(skill, mi) in role.missing_skills" :key="mi">{{ skill }}</li>
                       </ul>
                     </div>
 
                     <div v-if="role.recommended_certifications.length" class="career-role-block">
-                      <span class="career-role-block-label">🎓 Recommended Certifications</span>
+                      <span class="career-role-block-label"><UiIcon name="certificate" fallback="🎓" /> Empfohlene Zertifikate</span>
                       <ul class="career-role-list">
                         <li v-for="(cert, ci) in role.recommended_certifications" :key="ci">{{ cert }}</li>
                       </ul>
                     </div>
 
                     <div v-if="role.recommended_projects.length" class="career-role-block">
-                      <span class="career-role-block-label">🛠️ Recommended Projects</span>
+                      <span class="career-role-block-label"><UiIcon name="rocket" fallback="🛠️" /> Empfohlene Projekte</span>
                       <ul class="career-role-list">
                         <li v-for="(proj, pi) in role.recommended_projects" :key="pi">{{ proj }}</li>
                       </ul>
+                    </div>
+
+                    <div v-if="role.search_links && role.search_links.length" class="career-portals-btns career-portals-btns--sm">
+                      <a
+                        v-for="link in role.search_links"
+                        :key="link.portal"
+                        :href="link.url"
+                        target="_blank"
+                        rel="noopener"
+                        class="career-portal-btn career-portal-btn--sm"
+                      >{{ link.portal }} ↗</a>
                     </div>
                   </div>
                 </div>
 
                 <div v-if="careerAnalysis.recommended_learning_path.length" class="career-learning-path">
-                  <p class="career-roles-title">📚 Recommended Learning Path</p>
+                  <p class="career-roles-title"><UiIcon name="book" fallback="📚" /> Empfohlener Lernpfad</p>
                   <ul>
                     <li v-for="(step, si) in careerAnalysis.recommended_learning_path" :key="si">{{ step }}</li>
                   </ul>
@@ -188,111 +306,190 @@
             </div>
 
             <div v-if="item.id === 'kalender'" class="kalender-section">
-
-              <!-- Toolbar -->
-              <div class="kalender-toolbar">
-                <label class="kalender-upload-label">
-                  📂 .ics laden
-                  <input type="file" accept=".ics" @change="uploadIcsFile" hidden />
-                </label>
-                <button
-                  v-if="calendarEvents.length > 0"
-                  @click.stop="clearCalendar"
-                  :disabled="calendarClearing"
-                  class="kalender-clear-btn"
-                  title="Kalender leeren"
-                >🗑</button>
+              <div class="cal-toolbar">
+                <div class="cal-views">
+                  <button :class="['cal-view-btn', { active: calView === 'day' }]" @click.stop="calView = 'day'">Tag</button>
+                  <button :class="['cal-view-btn', { active: calView === 'week' }]" @click.stop="calView = 'week'">Woche</button>
+                  <button :class="['cal-view-btn', { active: calView === 'month' }]" @click.stop="calView = 'month'">Monat</button>
+                </div>
+                <div class="cal-nav">
+                  <button class="cal-nav-btn" @click.stop="calPrev" title="Zurück">‹</button>
+                  <button class="cal-today-btn" @click.stop="calToday">Heute</button>
+                  <button class="cal-nav-btn" @click.stop="calNext" title="Weiter">›</button>
+                </div>
+              </div>
+              <div class="cal-period-row">
+                <span class="cal-period">{{ calPeriodLabel }}</span>
+                <button v-if="!calShowAddForm" class="cal-add-btn" @click.stop="calShowAddForm = true">＋ Eigener Termin</button>
               </div>
 
-              <p v-if="icsUploadStatus" :class="['kalender-status', icsUploadStatus.type]">
-                {{ icsUploadStatus.message }}
-              </p>
+              <!-- Eigenen Termin hinzufügen -->
+              <form v-if="calShowAddForm" class="cal-add-form" @submit.prevent="addUserEvent" @click.stop>
+                <input v-model="userEventForm.title" placeholder="Titel *" required class="cal-add-input" />
+                <div class="cal-add-grid">
+                  <input type="date" v-model="userEventForm.date" required class="cal-add-input" />
+                  <input type="time" v-model="userEventForm.start" required class="cal-add-input" />
+                  <input type="time" v-model="userEventForm.end" required class="cal-add-input" />
+                </div>
+                <input v-model="userEventForm.location" placeholder="Ort (optional)" class="cal-add-input" />
+                <div class="cal-add-actions">
+                  <button type="submit" :disabled="userEventSaving" class="cal-add-save">{{ userEventSaving ? 'Speichert…' : 'Hinzufügen' }}</button>
+                  <button type="button" class="cal-add-cancel" @click.stop="calShowAddForm = false">Abbrechen</button>
+                </div>
+                <p v-if="userEventStatus" :class="['tutor-status', userEventStatus.type]">{{ userEventStatus.message }}</p>
+              </form>
 
-              <!-- Search -->
-              <input
-                v-if="calendarEvents.length > 0"
-                v-model="calendarSearch"
-                @click.stop
-                class="kalender-search"
-                placeholder="Kurs suchen..."
-                type="text"
-              />
-
-              <!-- Empty states -->
-              <div v-if="calendarEvents.length === 0" class="kalender-empty">
-                Noch keine Ereignisse geladen.
+              <div class="cal-legend">
+                <span class="cal-legend-item"><span class="cal-dot cal-dot--class"></span>Vorlesung</span>
+                <span class="cal-legend-item"><span class="cal-dot cal-dot--user"></span>Eigener Termin</span>
+                <span class="cal-legend-item"><span class="cal-dot cal-dot--deadline"></span>Deadline</span>
               </div>
-              <div v-else-if="filteredCalendarEvents.length === 0" class="kalender-empty">
-                Kein Kurs gefunden.
-              </div>
 
-              <!-- Grouped event cards -->
-              <div v-else class="kalender-groups">
-                <div v-for="group in visibleGroupedEvents" :key="group.date" class="kalender-group">
-                  <div class="kalender-date-header">{{ group.label }}</div>
+              <!-- MONAT -->
+              <div v-if="calView === 'month'" class="cal-month">
+                <div v-for="d in calWeekdayLabels" :key="'h'+d" class="cal-weekday">{{ d }}</div>
+                <template v-for="(week, wi) in calMonthGrid" :key="wi">
                   <div
-                    v-for="event in group.events"
-                    :key="event.id"
-                    :class="['kalender-card', eventTypeClass(event.title)]"
+                    v-for="day in week"
+                    :key="day.key"
+                    :class="['cal-cell', { 'cal-cell--out': !day.inMonth, 'cal-cell--today': day.isToday }]"
+                    @click.stop="calSelectDay(day.date)"
                   >
-                    <div class="kalender-card-body">
-                      <div class="kalender-card-top">
-                        <span class="kalender-card-name">{{ parseCourseName(event.title) }}</span>
-                        <span v-if="parseEventType(event.title)" class="kalender-card-badge">
-                          {{ parseEventType(event.title) }}
-                        </span>
-                      </div>
-                      <div class="kalender-card-time">
-                        🕐 {{ formatTime(event.start_time) }} – {{ formatTime(event.end_time) }}
-                      </div>
-                      <div v-if="event.location" class="kalender-card-meta">
-                        📍 {{ event.location }}
-                      </div>
-                      <div v-if="extractProfessor(event.description)" class="kalender-card-meta">
-                        👤 {{ extractProfessor(event.description) }}
-                      </div>
+                    <span class="cal-cell-num">{{ day.date.getDate() }}</span>
+                    <div class="cal-cell-events">
+                      <span
+                        v-for="e in day.events.slice(0, 3)"
+                        :key="e.id"
+                        :class="['cal-chip', 'cal-chip--' + e.kind]"
+                        :title="e.title"
+                      >{{ e.title }}</span>
+                      <span v-if="day.events.length > 3" class="cal-more">+{{ day.events.length - 3 }}</span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <!-- WOCHE -->
+              <div v-else-if="calView === 'week'" class="cal-week">
+                <div
+                  v-for="day in calWeekDays"
+                  :key="day.key"
+                  :class="['cal-week-col', { 'cal-week-col--today': day.isToday }]"
+                >
+                  <div class="cal-week-head" @click.stop="calSelectDay(day.date)">
+                    <span class="cal-week-dow">{{ calWeekdayLabels[(day.date.getDay() + 6) % 7] }}</span>
+                    <span class="cal-week-date">{{ day.date.getDate() }}.{{ day.date.getMonth() + 1 }}.</span>
+                  </div>
+                  <div class="cal-week-events">
+                    <div v-if="day.events.length === 0" class="cal-week-empty">–</div>
+                    <div v-for="e in day.events" :key="e.id" :class="['cal-event', 'cal-event--' + e.kind]" :title="e.location || e.title">
+                      <span class="cal-event-time">{{ e.allDay ? '●' : formatTime(e.start_time) }}</span>
+                      <span class="cal-event-name">{{ e.title }}</span>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <!-- Show all / less toggle -->
-              <button
-                v-if="filteredCalendarEvents.length > 10"
-                @click.stop="calendarShowAll = !calendarShowAll"
-                class="kalender-toggle-btn"
-              >
-                {{ calendarShowAll ? '▲ Weniger anzeigen' : `▼ Alle ${filteredCalendarEvents.length} anzeigen` }}
-              </button>
+              <!-- TAG -->
+              <div v-else class="cal-day">
+                <div v-if="calDayEvents.length === 0" class="kalender-empty">Keine Termine an diesem Tag.</div>
+                <div v-for="e in calDayEvents" :key="e.id" :class="['cal-day-event', 'cal-day-event--' + e.kind]">
+                  <div class="cal-day-time">
+                    <template v-if="!e.allDay">
+                      <span>{{ formatTime(e.start_time) }}</span>
+                      <span class="cal-day-time-end">{{ formatTime(e.end_time) }}</span>
+                    </template>
+                    <span v-else class="cal-day-allday">ganztägig</span>
+                  </div>
+                  <div class="cal-day-body">
+                    <div class="cal-day-top">
+                      <span class="cal-day-name">{{ e.title }}</span>
+                      <span v-if="e.kind === 'deadline'" class="kalender-card-badge">{{ plannerTypeLabel(e.deadlineType) }}</span>
+                      <span v-else-if="e.kind === 'user'" class="kalender-card-badge cal-badge-user">Eigener Termin</span>
+                    </div>
+                    <div v-if="e.location" class="kalender-card-meta"><UiIcon name="location" fallback="📍" /> {{ e.location }}</div>
+                    <button v-if="e.kind === 'user'" class="cal-day-del" @click.stop="deleteUserEvent(e.rawId)">Termin löschen</button>
+                  </div>
+                </div>
+              </div>
+            </div>
 
+            <div v-if="item.id === 'profil'" class="profil-section">
+              <!-- MODULHANDBUCH (Vorgänger-Graph für Wissenslücken) -->
+              <div class="curriculum-box">
+                <div class="curriculum-head">
+                  <span class="curriculum-title">Modulhandbuch</span>
+                  <span v-if="curriculumStatus && curriculumStatus.modules > 0" class="curriculum-count">
+                    {{ curriculumStatus.modules }} Module · {{ curriculumStatus.with_prerequisites }} mit Vorgängern
+                  </span>
+                </div>
+                <div class="curriculum-row">
+                  <label class="cv-upload-label" @click.stop>
+                    <UiIcon name="clip" fallback="📎" />
+                    {{ (curriculumUploading || (curriculumStatus && curriculumStatus.processing)) ? 'Wird analysiert…' : ((curriculumStatus && curriculumStatus.modules > 0) ? 'Modulhandbuch ersetzen' : 'Modulhandbuch hochladen') }}
+                    <input type="file" accept=".pdf" @change="uploadCurriculum" hidden />
+                  </label>
+                  <button v-if="curriculumStatus && curriculumStatus.modules > 0" @click.stop="deleteCurriculum" class="cv-delete-btn" title="Modulhandbuch entfernen">✕</button>
+                </div>
+                <p class="curriculum-hint">
+                  <template v-if="curriculumStatus && curriculumStatus.processing">Die KI extrahiert die Module + Vorgänger-Beziehungen — das dauert einen Moment.</template>
+                  <template v-else-if="curriculumStatus && curriculumStatus.modules > 0">Die Wissenslücken-Analyse empfiehlt jetzt bei schwachen Modulen gezielt die Vorgängermodule zum Wiederholen.</template>
+                  <template v-else>Lade das Modulhandbuch deines Studiengangs hoch — dann erkennt die Wissenslücken-Analyse, welche Vorgängermodule du wiederholen solltest.</template>
+                </p>
+              </div>
+
+              <div v-if="profileLoading" class="tutor-empty">Lade Profil…</div>
+              <template v-else-if="profileData && profileData.topics.length > 0">
+                <div class="profil-overall">
+                  <div class="profil-overall-ring" :style="{ '--p': profileData.overall_score }">
+                    <span class="profil-overall-val">{{ profileData.overall_score }}</span>
+                  </div>
+                  <div class="profil-overall-meta">
+                    <span class="profil-overall-label">Gesamt-Beherrschung</span>
+                    <span class="profil-overall-sub">{{ profileData.total_answered }} beantwortete Fragen</span>
+                  </div>
+                </div>
+
+                <p class="profil-heading">Themen</p>
+                <div v-for="t in profileData.topics" :key="t.topic" class="profil-topic">
+                  <div class="profil-topic-head">
+                    <span class="profil-topic-name">{{ t.topic }}</span>
+                    <span :class="['profil-topic-score', 'plevel-' + t.level]">{{ t.score }}/100</span>
+                  </div>
+                  <div class="profil-bar">
+                    <div :class="['profil-bar-fill', 'plevel-' + t.level]" :style="{ width: t.score + '%' }"></div>
+                  </div>
+                  <span class="profil-topic-sub">{{ t.correct }}/{{ t.total }} richtig · {{ t.attempts }} Quiz(ze)</span>
+                </div>
+
+                <button
+                  v-if="profileData.weak_topics.length > 0"
+                  @click.stop="generateWeaknessQuiz"
+                  :disabled="tutorGenerating"
+                  class="profil-weakness-btn"
+                >
+                  <UiIcon name="target" fallback="🎯" />
+                  {{ tutorGenerating ? 'Wird erstellt…' : 'Schwächen-Quiz starten' }}
+                </button>
+              </template>
+              <div v-else class="tutor-empty">
+                Noch kein Lernprofil. Mach ein paar Quizze im Quiz-Tab — danach siehst du
+                hier pro Thema deinen Beherrschungs-Score (0–100).
+              </div>
+
+              <div class="profil-reset">
+                <button @click.stop="resetProfile" :disabled="profileResetting" class="profil-reset-btn">
+                  {{ profileResetting ? 'Wird zurückgesetzt…' : 'Profil vollständig zurücksetzen' }}
+                </button>
+                <p class="profil-reset-hint">
+                  Löscht alle gespeicherten Daten: Quizze &amp; Ergebnisse, hochgeladene Dokumente,
+                  Lebenslauf, Modulhandbuch, eigene Termine und Chats. Noten &amp; Stundenplan
+                  (LSF) bleiben und lassen sich neu synchronisieren.
+                </p>
+              </div>
             </div>
 
             <div v-if="item.id === 'noten'" class="noten-section">
-              <div class="noten-toolbar">
-                <label class="noten-upload-label">
-                  📂 PDF auswählen
-                  <input type="file" accept=".pdf" @change="selectGradesPdf" hidden />
-                </label>
-                <button
-                  v-if="gradesData && gradesData.courses.length > 0"
-                  @click.stop="clearGrades"
-                  :disabled="gradesClearing"
-                  class="kalender-clear-btn"
-                  title="Noten löschen"
-                >🗑</button>
-              </div>
-              <p v-if="gradesFileName" class="noten-filename">📄 {{ gradesFileName }}</p>
-              <button
-                v-if="gradesFileName"
-                @click.stop="extractGrades"
-                :disabled="gradesLoading"
-                class="noten-extract-btn"
-              >
-                {{ gradesLoading ? '⏳ Extrahieren...' : '🔍 Noten extrahieren' }}
-              </button>
-              <p v-if="gradesStatus" :class="['noten-status', gradesStatus.type]">
-                {{ gradesStatus.message }}
-              </p>
               <div v-if="gradesData && gradesData.courses.length > 0" class="noten-results">
                 <div v-if="gradesData.studentName || gradesData.totalCredits" class="noten-summary">
                   <span v-if="gradesData.studentName" class="noten-student">{{ gradesData.studentName }}</span>
@@ -319,18 +516,15 @@
                   </table>
                 </div>
               </div>
-              <div v-else-if="gradesData" class="noten-empty">
-                Keine Noten gefunden.
-              </div>
               <div v-else class="noten-empty">
-                Noch keine Noten geladen.
+                Keine Noten. Klicke oben auf „LSF synchronisieren".
               </div>
             </div>
 
             <div v-if="item.id === 'pruefungen'" class="pruefungen-section">
               <div v-if="upcomingExams.length === 0" class="pruefungen-empty">
-                Noch keine Prüfungen eingetragen.<br>
-                <span class="pruefungen-hint">Prüfungen im Planner-Tab mit Typ EXAM hinzufügen.</span>
+                Keine Prüfungen.<br>
+                <span class="pruefungen-hint">Klicke oben auf „LSF synchronisieren".</span>
               </div>
               <ul v-else class="pruefungen-list">
                 <li v-for="exam in upcomingExams" :key="exam.id" class="pruefungen-item">
@@ -344,226 +538,39 @@
             </div>
 
             <div v-if="item.id === 'planner'" class="planner-section" @click.stop>
-              <form @submit.prevent="submitPlannerEvent" class="planner-form">
-                <input v-model="plannerForm.title" placeholder="Titel *" required class="planner-input" @click.stop />
-                <input v-model="plannerForm.course_name" placeholder="Kursname *" required class="planner-input" @click.stop />
-                <select v-model="plannerForm.type" class="planner-input" @click.stop>
-                  <option value="EXAM">Prüfung (EXAM)</option>
-                  <option value="ASSIGNMENT">Abgabe (ASSIGNMENT)</option>
-                  <option value="PRESENTATION">Präsentation (PRESENTATION)</option>
-                </select>
-                <input type="date" v-model="plannerForm.date" required class="planner-input" @click.stop />
-                <input v-model="plannerForm.description" placeholder="Beschreibung (optional)" class="planner-input" @click.stop />
-                <button type="submit" :disabled="plannerSubmitting" class="planner-submit-btn">
-                  {{ plannerSubmitting ? '⏳ Speichern...' : '+ Event hinzufügen' }}
-                </button>
-              </form>
-              <p v-if="plannerStatus" :class="['planner-status', plannerStatus.type]">{{ plannerStatus.message }}</p>
+              <!-- LERNPLAN-GENERATOR -->
+              <button @click.stop="generateStudyPlan" :disabled="studyPlanLoading" class="planner-plan-btn">
+                <UiIcon name="calendar-2" fallback="🗓" cls="planner-plan-icon" />
+                {{ studyPlanLoading ? 'Erstelle Lernplan…' : 'Lernplan für 7 Tage erstellen' }}
+              </button>
+              <div v-if="studyPlan" class="planner-plan-result">
+                <div class="planner-plan-head">
+                  <span class="planner-plan-title">Dein Lernplan</span>
+                  <span v-if="studyPlanDate" class="planner-plan-date">{{ formatPlanDate(studyPlanDate) }}</span>
+                  <button @click.stop="clearStudyPlan" class="planner-plan-close" title="Lernplan verwerfen">✕</button>
+                </div>
+                <div class="planner-plan-text markdown" v-html="renderMarkdown(studyPlan)"></div>
+              </div>
 
-              <div v-if="plannerEvents.length === 0" class="planner-empty">Noch keine Events eingetragen.</div>
+              <p class="planner-deadlines-label">Anstehende Deadlines</p>
+              <div v-if="plannerEvents.length === 0" class="planner-empty">
+                Keine Deadlines. Klicke oben auf „LSF synchronisieren".
+              </div>
               <div v-else class="planner-list">
                 <div v-for="event in plannerEvents" :key="event.id" class="planner-card">
                   <div class="planner-card-header">
                     <span class="planner-card-title">{{ event.title }}</span>
-                    <button @click.stop="deletePlannerEvent(event.id)" class="planner-delete-btn" title="Löschen">✕</button>
                   </div>
                   <div class="planner-card-meta">
                     <span class="planner-course">{{ event.course_name }}</span>
                     <span :class="['planner-type-badge', 'ptype-' + event.type.toLowerCase()]">{{ plannerTypeLabel(event.type) }}</span>
                   </div>
                   <div class="planner-card-footer">
-                    <span class="planner-date">📅 {{ formatPlannerDate(event.date) }}</span>
+                    <span class="planner-date"><UiIcon name="calendar-2" fallback="📅" /> {{ formatPlannerDate(event.date) }}</span>
                     <span class="planner-days">{{ event.days_remaining }} Tage verbleibend</span>
-                    <span :class="['planner-priority', 'pprio-' + event.priority.toLowerCase()]">{{ event.priority }}</span>
+                    <span :class="['planner-priority', 'pprio-' + event.priority.toLowerCase()]">{{ priorityLabel(event.priority) }}</span>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <div v-if="item.id === 'focus-time'" class="focus-section" @click.stop>
-              <div class="focus-settings-bar">
-                <label class="focus-setting">
-                  <span class="focus-setting-label">Focus</span>
-                  <span class="focus-setting-input-wrap">
-                    <input type="text" inputmode="decimal" v-model="focusForm.focusMinutes" @change="syncFocusSettings" @click.stop />
-                    <small>min</small>
-                  </span>
-                </label>
-                <span class="focus-setting-divider"></span>
-                <label class="focus-setting">
-                  <span class="focus-setting-label">Break</span>
-                  <span class="focus-setting-input-wrap">
-                    <input type="text" inputmode="decimal" v-model="focusForm.breakMinutes" @change="syncFocusSettings" @click.stop />
-                    <small>min</small>
-                  </span>
-                </label>
-                <span class="focus-setting-divider"></span>
-                <label class="focus-setting">
-                  <span class="focus-setting-label">Cycles</span>
-                  <span class="focus-setting-input-wrap">
-                    <input type="number" min="1" max="12" v-model.number="focusForm.cycles" @input="syncFocusSettings" @click.stop />
-                  </span>
-                </label>
-              </div>
-
-              <div :class="['focus-stage', { 'focus-stage--break': focusMode === 'break', 'focus-stage--final': focusFinalCountdownActive }]">
-                <div class="focus-scene" :style="focusSceneStyle">
-                  <div class="flight-sky"></div>
-                  <div class="flight-sun"></div>
-                  <div class="flight-cloud flight-cloud--one"></div>
-                  <div class="flight-cloud flight-cloud--two"></div>
-                  <div class="flight-cloud flight-cloud--three"></div>
-
-                  <svg class="flight-map" viewBox="0 0 1000 360" preserveAspectRatio="none" aria-hidden="true">
-                    <defs>
-                      <linearGradient id="flightRouteGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stop-color="#38bdf8" />
-                        <stop offset="55%" stop-color="#a78bfa" />
-                        <stop offset="100%" stop-color="#34d399" />
-                      </linearGradient>
-                    </defs>
-                    <path class="flight-route-base" d="M92 257 C 280 96, 690 82, 908 238" />
-                    <path class="flight-route-progress" d="M92 257 C 280 96, 690 82, 908 238" pathLength="100" />
-                  </svg>
-
-                  <img class="flight-aircraft" :src="aircraftImg" aria-hidden="true" alt="" />
-                </div>
-              </div>
-
-              <div class="focus-route-line">
-                <span class="focus-route-cities">Berlin <span class="focus-route-plane">✈</span> Paris</span>
-                <div class="focus-cycle-dots">
-                  <span
-                    v-for="n in focusForm.cycles"
-                    :key="n"
-                    :class="['focus-cycle-dot', { 'focus-cycle-dot--done': n <= focusCompletedCycles, 'focus-cycle-dot--active': n === focusCompletedCycles + 1 && focusStatus !== 'idle' && focusStatus !== 'completed' }]"
-                  ></span>
-                </div>
-              </div>
-
-              <div :class="['focus-timer', { 'focus-timer--break': focusMode === 'break', 'focus-timer--final': focusFinalCountdownActive }]">
-                <span class="focus-timer-label">{{ focusModeLabel }}</span>
-                <span class="focus-timer-display">{{ focusRemainingLabel }}</span>
-                <div class="focus-timer-progress">
-                  <div class="focus-timer-progress-fill" :style="{ width: focusProgressPct + '%' }"></div>
-                </div>
-                <span class="focus-timer-pct">{{ focusProgressPct }}%</span>
-              </div>
-
-              <div class="focus-actions">
-                <button @click.stop="startFocusTimer" :disabled="focusStatus === 'running'" class="focus-btn focus-btn--primary">
-                  <span class="focus-btn-icon">▶</span> Start
-                </button>
-                <button @click.stop="pauseFocusTimer" :disabled="focusStatus !== 'running'" class="focus-btn">
-                  <span class="focus-btn-icon">⏸</span> Pause
-                </button>
-                <button @click.stop="resumeFocusTimer" :disabled="focusStatus !== 'paused'" class="focus-btn">
-                  <span class="focus-btn-icon">↻</span> Resume
-                </button>
-              </div>
-
-              <div v-if="focusStatus === 'completed'" class="focus-summary-card">
-                <span class="focus-summary-check">✓</span>
-                <p class="focus-summary-title">Session complete</p>
-                <p class="focus-summary-text">{{ focusSummaryText }}</p>
-                <div class="focus-summary-stats">
-                  <div class="focus-summary-stat">
-                    <strong>{{ formatFocusMinutes(focusTodayStats.total_focus_time) }}</strong>
-                    <span>minutes</span>
-                  </div>
-                  <div class="focus-summary-stat">
-                    <strong>{{ focusTodayStats.sessions }}</strong>
-                    <span>sessions</span>
-                  </div>
-                  <div class="focus-summary-stat">
-                    <strong>{{ focusTodayStats.completed_cycles }}</strong>
-                    <span>cycles</span>
-                  </div>
-                </div>
-              </div>
-              <p v-else class="focus-motivation">{{ focusMotivation }}</p>
-
-              <p v-if="focusStatusMessage" :class="['focus-status', focusStatusMessage.type]">{{ focusStatusMessage.message }}</p>
-            </div>
-
-            <!-- AI LANGUAGE TUTOR -->
-            <div v-if="item.id === 'sprachtutor'" class="langtutor-section" @click.stop>
-              <div class="langtutor-lang-row">
-                <button
-                  v-for="lang in langTutorLanguages"
-                  :key="lang"
-                  @click.stop="selectLangTutorLanguage(lang)"
-                  :class="['langtutor-lang-chip', { 'langtutor-lang-chip--active': langTutorLanguage === lang }]"
-                >{{ lang }}</button>
-              </div>
-
-              <div class="langtutor-progress">
-                <span class="langtutor-progress-badge">🏆 {{ langTutorProgress.cefr_level }}</span>
-                <div class="langtutor-xp-wrap">
-                  <div class="langtutor-xp-bar"><div class="langtutor-xp-bar-fill" :style="{ width: langTutorXpBarPct + '%' }"></div></div>
-                  <span class="langtutor-progress-xp">⭐ {{ langTutorProgress.xp }} XP</span>
-                </div>
-              </div>
-
-              <div class="langtutor-messages" ref="langTutorMessages">
-                <div v-if="langTutorHistory.length === 0" class="langtutor-empty">
-                  Say or type something in {{ langTutorLanguage }} to start practicing!
-                </div>
-                <div v-for="(turn, i) in langTutorHistory" :key="i" :class="['langtutor-turn', turn.role]">
-                  <div v-if="turn.role === 'user'" class="langtutor-bubble langtutor-bubble--user">{{ turn.text }}</div>
-                  <div v-else class="langtutor-bubble langtutor-bubble--ai">
-                    <p class="langtutor-reply">{{ turn.reply }}</p>
-                    <div v-if="turn.correction" class="langtutor-block langtutor-block--correction">
-                      <span class="langtutor-block-label">✏️ Correction</span>
-                      <p>{{ turn.correction }}</p>
-                      <p v-if="turn.explanation" class="langtutor-explanation">{{ turn.explanation }}</p>
-                    </div>
-                    <div v-if="turn.vocabulary && turn.vocabulary.length" class="langtutor-block langtutor-block--vocab">
-                      <span class="langtutor-block-label">📚 Vocabulary</span>
-                      <ul>
-                        <li v-for="(v, vi) in turn.vocabulary" :key="vi"><strong>{{ v.word }}</strong> — {{ v.meaning }}</li>
-                      </ul>
-                    </div>
-                    <div v-if="turn.better_version" class="langtutor-block langtutor-block--better">
-                      <span class="langtutor-block-label">💡 Better version</span>
-                      <p>{{ turn.better_version }}</p>
-                    </div>
-                    <div v-if="turn.next_question" class="langtutor-block langtutor-block--question">
-                      <span class="langtutor-block-label">❓ Next question</span>
-                      <p>{{ turn.next_question }}</p>
-                    </div>
-                  </div>
-                </div>
-                <div v-if="langTutorLoading" class="langtutor-bubble langtutor-bubble--ai langtutor-bubble--loading">⏳ Thinking...</div>
-              </div>
-
-              <p v-if="langTutorError" class="langtutor-status error">{{ langTutorError }}</p>
-              <p v-if="langTutorSpeechError" class="langtutor-status error">{{ langTutorSpeechError }}</p>
-
-              <div class="langtutor-input-row">
-                <input
-                  v-model="langTutorInput"
-                  type="text"
-                  :placeholder="langTutorListening ? 'Listening... I will send it when you stop talking' : `Type or speak in ${langTutorLanguage}...`"
-                  @keydown.enter.exact.prevent="sendLangTutorMessage"
-                  @click.stop
-                  class="langtutor-input"
-                />
-                <button
-                  v-if="speechSupported"
-                  @click.stop="toggleLangTutorVoiceInput"
-                  :class="['mic-btn', { 'mic-btn--listening': langTutorListening }]"
-                  title="Speak"
-                  type="button"
-                >
-                  <span v-if="langTutorListening" class="mic-pulse"></span>
-                  🎤
-                </button>
-                <button
-                  @click.stop="sendLangTutorMessage"
-                  :disabled="langTutorLoading || !langTutorInput.trim()"
-                  class="langtutor-send-btn"
-                >➤</button>
               </div>
             </div>
 
@@ -573,14 +580,22 @@
               <!-- SETUP VIEW -->
               <div v-if="tutorView === 'setup'">
                 <div class="tutor-doc-list">
-                  <p class="tutor-label">Dokumente auswählen</p>
+                  <div class="tutor-doc-head">
+                    <p class="tutor-label">Dokumente auswählen</p>
+                    <label class="tutor-upload-label" @click.stop>
+                      <UiIcon name="clip" fallback="📎" />
+                      {{ quizUploading ? 'Lädt…' : 'PDF hochladen' }}
+                      <input type="file" accept=".pdf" @change="uploadQuizFile" :disabled="quizUploading" hidden />
+                    </label>
+                  </div>
                   <div v-if="tutorDocuments.length === 0" class="tutor-empty">
-                    Noch keine Dokumente hochgeladen. Lade zuerst ein PDF über das Büroklammer-Icon hoch.
+                    Noch keine Dokumente. Lade hier ein PDF hoch, um daraus ein Quiz zu erstellen.
                   </div>
                   <label v-for="doc in tutorDocuments" :key="doc" class="tutor-doc-item" @click.stop>
-                    <input type="checkbox" :value="doc" v-model="tutorSelectedDocs" @click.stop />
-                    <span class="tutor-doc-name">{{ doc }}</span>
+                    <input type="checkbox" :value="doc" v-model="tutorSelectedDocs" @click.stop @change="onDocSelectionChange" />
+                    <span class="tutor-doc-name">{{ truncateName(doc, 32) }}</span>
                   </label>
+                  <p v-if="quizUploadStatus" :class="['tutor-status', quizUploadStatus.type]">{{ quizUploadStatus.message }}</p>
                 </div>
                 <div class="tutor-config">
                   <div class="tutor-slider-row">
@@ -588,14 +603,18 @@
                     <span class="tutor-slider-val">{{ tutorNumQuestions }}</span>
                   </div>
                   <input type="range" min="5" max="20" v-model.number="tutorNumQuestions" class="tutor-slider" @click.stop />
-                  <input v-model="tutorCourseName" placeholder="Kursname (optional)" class="tutor-input" @click.stop />
+                  <input v-model="tutorCourseName" placeholder="Modul / Kursname (optional)" class="tutor-input" @click.stop @input="moduleSuggested = false" />
+                  <p v-if="moduleSuggested" class="tutor-module-hint">Modul automatisch aus dem Modulhandbuch erkannt — anpassbar.</p>
                 </div>
                 <div class="tutor-action-row">
                   <button @click.stop="generateTutorQuiz" :disabled="tutorGenerating || tutorSelectedDocs.length === 0" class="tutor-generate-btn">
                     {{ tutorGenerating ? '⏳ Wird generiert...' : '✦ Quiz generieren' }}
                   </button>
-                  <button @click.stop="fetchTutorStats" class="tutor-stats-btn">📊 Statistiken</button>
+                  <button @click.stop="fetchTutorStats" class="tutor-stats-btn"><UiIcon name="stats" fallback="📊" /> Statistiken</button>
                 </div>
+                <button @click.stop="generateWeaknessQuiz" :disabled="tutorGenerating" class="tutor-weakness-btn">
+                  <UiIcon name="target" fallback="🎯" /> {{ tutorGenerating ? 'Wird generiert...' : 'Schwächen-Quiz (aus meinem Profil)' }}
+                </button>
                 <p v-if="tutorStatus" :class="['tutor-status', tutorStatus.type]">{{ tutorStatus.message }}</p>
               </div>
 
@@ -604,6 +623,13 @@
                 <div class="tutor-view-header">
                   <button @click.stop="tutorView = 'setup'" class="tutor-back-btn">← Zurück</button>
                   <span class="tutor-view-title">Meine Statistiken</span>
+                  <button
+                    v-if="tutorStats && tutorStats.total_attempts > 0"
+                    @click.stop="resetStats"
+                    :disabled="tutorStatsResetting"
+                    class="tutor-reset-btn"
+                    title="Alle Quiz-Statistiken löschen"
+                  >{{ tutorStatsResetting ? '…' : 'Zurücksetzen' }}</button>
                 </div>
                 <div v-if="tutorStatsLoading" class="tutor-empty">Lade Statistiken...</div>
                 <div v-else-if="tutorStats">
@@ -617,15 +643,37 @@
                       <span class="tutor-stat-lbl">Ø Score</span>
                     </div>
                   </div>
+
+                  <!-- EVALUATOR AGENT: KI-Wissenslücken-Analyse -->
+                  <div class="evaluator-block">
+                    <button
+                      v-if="!evaluatorAnalysis && !evaluatorLoading"
+                      @click.stop="fetchKnowledgeGaps"
+                      :disabled="tutorStats.total_attempts === 0"
+                      class="evaluator-btn"
+                    >
+                      <UiIcon name="brain" fallback="🧠" /> KI-Wissenslücken-Analyse
+                    </button>
+                    <div v-if="evaluatorLoading" class="tutor-empty">
+                      Der Evaluator-Agent analysiert deinen Lernfortschritt…
+                    </div>
+                    <div v-if="evaluatorAnalysis" class="evaluator-result">
+                      <div class="evaluator-result-header">
+                        <span class="evaluator-result-title"><UiIcon name="brain" fallback="🧠" /> Wissenslücken-Analyse</span>
+                        <button @click.stop="evaluatorAnalysis = ''" class="evaluator-refresh">↻ Neu</button>
+                      </div>
+                      <div class="evaluator-text">{{ evaluatorAnalysis }}</div>
+                    </div>
+                  </div>
                   <div v-if="tutorStats.weak_questions.length > 0" class="tutor-stats-block">
-                    <p class="tutor-stats-heading">📉 Verbesserungspotenzial</p>
+                    <p class="tutor-stats-heading"><UiIcon name="trend-down" fallback="📉" /> Verbesserungspotenzial</p>
                     <div v-for="q in tutorStats.weak_questions" :key="q.question_id" class="tutor-stats-item tutor-stats-weak">
                       <span class="tutor-stats-rate">{{ q.success_rate }}%</span>
                       <span class="tutor-stats-text">{{ q.question_text }}</span>
                     </div>
                   </div>
                   <div v-if="tutorStats.strong_questions.length > 0" class="tutor-stats-block">
-                    <p class="tutor-stats-heading">📈 Du kannst das gut</p>
+                    <p class="tutor-stats-heading"><UiIcon name="trend-up" fallback="📈" /> Du kannst das gut</p>
                     <div v-for="q in tutorStats.strong_questions" :key="q.question_id" class="tutor-stats-item tutor-stats-strong">
                       <span class="tutor-stats-rate">{{ q.success_rate }}%</span>
                       <span class="tutor-stats-text">{{ q.question_text }}</span>
@@ -650,12 +698,12 @@
                   <p class="tutor-question-text">{{ currentQuestion.question_text }}</p>
                   <div v-if="currentQuestion.question_type === 'MC'" class="tutor-options">
                     <button
-                      v-for="opt in currentQuestion.options" :key="opt"
-                      :class="['tutor-option', { 'tutor-option--selected': tutorAnswers[currentQuestion.id] === opt[0] }]"
-                      @click.stop="selectAnswer(currentQuestion.id, opt[0])"
+                      v-for="(opt, oi) in currentQuestion.options" :key="oi"
+                      :class="['tutor-option', { 'tutor-option--selected': tutorAnswers[currentQuestion.id] === optionLetter(oi) }]"
+                      @click.stop="selectAnswer(currentQuestion.id, optionLetter(oi))"
                     >
-                      <span class="tutor-opt-key">{{ opt[0] }}</span>
-                      <span class="tutor-opt-text">{{ opt.slice(3) }}</span>
+                      <span class="tutor-opt-key">{{ optionLetter(oi) }}</span>
+                      <span class="tutor-opt-text">{{ optionLabel(opt) }}</span>
                     </button>
                   </div>
                   <div v-if="currentQuestion.question_type === 'TF'" class="tutor-tf-options">
@@ -667,7 +715,8 @@
                   <button @click.stop="tutorCurrentQuestion--" :disabled="tutorCurrentQuestion === 0" class="tutor-nav-btn">← Zurück</button>
                   <button v-if="tutorCurrentQuestion < tutorQuiz.questions.length - 1" @click.stop="tutorCurrentQuestion++" class="tutor-nav-btn tutor-nav-btn--next">Weiter →</button>
                   <button v-else @click.stop="submitTutorQuiz" :disabled="!tutorAllAnswered || tutorSubmitting" class="tutor-nav-btn tutor-nav-btn--submit">
-                    {{ tutorSubmitting ? '⏳' : '✓ Auswerten' }}
+                    <template v-if="tutorSubmitting">⏳</template>
+                    <template v-else><UiIcon name="check" fallback="✓" /> Auswerten</template>
                   </button>
                 </div>
                 <p v-if="!tutorAllAnswered" class="tutor-unanswered">{{ tutorUnansweredCount }} Frage(n) noch offen</p>
@@ -685,13 +734,15 @@
                     :class="['tutor-result-item', ans.is_correct ? 'result-correct' : 'result-wrong']"
                   >
                     <div class="tutor-result-row">
-                      <span class="tutor-result-icon">{{ ans.is_correct ? '✓' : '✗' }}</span>
+                      <span :class="['tutor-result-icon', ans.is_correct ? 'result-ok' : 'result-bad']">
+                        <UiIcon :name="ans.is_correct ? 'check' : 'cross'" :fallback="ans.is_correct ? '✓' : '✗'" cls="tutor-result-icon-img" />
+                      </span>
                       <span class="tutor-result-q">{{ questionTextById(ans.question_id) }}</span>
                     </div>
                     <div v-if="!ans.is_correct" class="tutor-result-answer">
                       Deine Antwort: <strong>{{ ans.given_answer }}</strong> · Richtig: <strong>{{ ans.correct_answer }}</strong>
                     </div>
-                    <div v-if="ans.explanation" class="tutor-result-explanation">💡 {{ ans.explanation }}</div>
+                    <div v-if="ans.explanation" class="tutor-result-explanation"><UiIcon name="lightbulb" fallback="💡" /> {{ ans.explanation }}</div>
                   </div>
                 </div>
                 <button @click.stop="resetTutorQuiz" class="tutor-restart-btn">Neues Quiz starten</button>
@@ -702,11 +753,30 @@
           </div>
         </div>
       </div>
-      <button class="theme-btn" @click.stop="toggleDark" :title="isDark ? 'Light Mode' : 'Dark Mode'">
-        {{ isDark ? '☀️' : '🌙' }}
-      </button>
-    </nav>
+      <p class="sidebar-section-label">Chats</p>
+      <div class="chat-list">
+        <div
+          v-for="c in chats"
+          :key="c.id"
+          @click.stop="switchChat(c.id)"
+          :class="['chat-list-item', { active: c.id === chatId }]"
+          :title="c.title"
+        >
+          <span class="chat-list-title">{{ c.title }}</span>
+          <span class="chat-list-del" @click.stop="deleteChat(c.id)" title="Chat löschen">✕</span>
+        </div>
+      </div>
 
+      <div v-if="tutorDocuments.length > 0" class="chat-docs">
+        <p class="chat-docs-label">Hochgeladene Dokumente</p>
+        <div v-for="d in tutorDocuments" :key="d" class="chat-doc-item" :title="d">
+          <UiIcon name="clip" fallback="📎" /> <span>{{ truncateName(d, 22) }}</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- HAUPTSPALTE: Chat + Eingabe -->
+    <div class="main-col">
     <!-- CHAT AREA -->
     <main class="chat-area" ref="chatArea">
       <div class="messages">
@@ -732,40 +802,40 @@
 
           <div class="welcome-cards">
             <div class="welcome-card">
-              <span class="welcome-card-icon">📋</span>
+              <span class="welcome-card-icon"><UiIcon name="journal-alt" fallback="📋" cls="welcome-icon-img" /></span>
               <div>
-                <div class="welcome-card-title">Planner-aware</div>
-                <div class="welcome-card-desc">Uses exams, assignments and presentations.</div>
+                <div class="welcome-card-title">Planner-bewusst</div>
+                <div class="welcome-card-desc">Nutzt Prüfungen, Abgaben und Präsentationen.</div>
               </div>
             </div>
             <div class="welcome-card">
-              <span class="welcome-card-icon">📆</span>
+              <span class="welcome-card-icon"><UiIcon name="calendar-2" fallback="📆" cls="welcome-icon-img" /></span>
               <div>
-                <div class="welcome-card-title">Calendar-aware</div>
-                <div class="welcome-card-desc">Uses upcoming classes and events.</div>
+                <div class="welcome-card-title">Kalender-bewusst</div>
+                <div class="welcome-card-desc">Nutzt bevorstehende Kurse und Termine.</div>
               </div>
             </div>
             <div class="welcome-card">
-              <span class="welcome-card-icon">🧠</span>
+              <span class="welcome-card-icon"><UiIcon name="web-test" fallback="🧠" cls="welcome-icon-img" /></span>
               <div>
-                <div class="welcome-card-title">AI Study Advisor</div>
-                <div class="welcome-card-desc">Provides personalized study recommendations.</div>
+                <div class="welcome-card-title">KI-Lernberater</div>
+                <div class="welcome-card-desc">Gibt personalisierte Lernempfehlungen.</div>
               </div>
             </div>
             <div
               :class="['welcome-card', 'welcome-card--next-class', { 'welcome-card--clickable': nextClass }]"
               @click="nextClass && togglePanel('kalender')"
             >
-              <span class="welcome-card-icon">🏫</span>
+              <span class="welcome-card-icon"><UiIcon name="university" fallback="🏫" cls="welcome-icon-img" /></span>
               <div class="next-class-body">
-                <div class="welcome-card-title">Next Class</div>
+                <div class="welcome-card-title">Nächster Kurs</div>
                 <template v-if="nextClass">
                   <div class="next-class-course" :title="nextClass.title">{{ extractCourseName(nextClass.title) }}</div>
-                  <div class="next-class-meta">📅 {{ nextClassRelativeDate(nextClass.start_time) }}</div>
-                  <div class="next-class-meta">🕐 {{ formatTime(nextClass.start_time) }} – {{ formatTime(nextClass.end_time) }}</div>
-                  <div v-if="nextClass.location" class="next-class-meta">📍 {{ extractRoom(nextClass.location) }}</div>
+                  <div class="next-class-meta"><UiIcon name="calendar-2" fallback="📅" /> {{ nextClassRelativeDate(nextClass.start_time) }}</div>
+                  <div class="next-class-meta"><UiIcon name="clock" fallback="🕐" /> {{ formatTime(nextClass.start_time) }} – {{ formatTime(nextClass.end_time) }}</div>
+                  <div v-if="nextClass.location" class="next-class-meta"><UiIcon name="location" fallback="📍" /> {{ extractRoom(nextClass.location) }}</div>
                 </template>
-                <div v-else class="next-class-meta">No upcoming classes found.</div>
+                <div v-else class="next-class-meta">Keine bevorstehenden Kurse gefunden.</div>
               </div>
             </div>
           </div>
@@ -774,7 +844,11 @@
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
           <div class="bubble">
             <template v-if="msg.role === 'assistant'">
-              <div v-if="!loading || i < messages.length - 1"
+              <div v-if="msg.kind === 'success'" class="bubble-success">
+                <UiIcon name="check" fallback="✅" cls="bubble-success-icon" />
+                <div class="bubble-text markdown" v-html="renderMarkdown(msg.content)"></div>
+              </div>
+              <div v-else-if="!loading || i < messages.length - 1"
                    class="bubble-text markdown"
                    v-html="renderMarkdown(msg.content)">
               </div>
@@ -791,12 +865,12 @@
     <div class="input-bar">
       <div class="input-container">
         <label :class="['upload-btn', { 'upload-btn--busy': uploading }]" :title="uploading ? 'Wird hochgeladen...' : 'PDF hochladen'">
-          {{ uploading ? '⏳' : '📎' }}
+          <span v-if="uploading">⏳</span><UiIcon v-else name="clip" fallback="📎" cls="attach-icon-img" />
           <input type="file" accept=".pdf" @change="uploadFile" :disabled="uploading" hidden />
         </label>
         <textarea
           v-model="prompt"
-          :placeholder="isListening ? 'Listening...' : 'Frage eingeben...'"
+          :placeholder="isListening ? 'Höre zu…' : 'Frage eingeben…'"
           @keydown.enter.exact.prevent="sendPrompt"
           @input="resizeTextarea"
           ref="textarea"
@@ -806,7 +880,7 @@
           v-if="speechSupported"
           v-model="speechLang"
           class="lang-select"
-          title="Voice recognition language"
+          title="Sprache der Spracherkennung"
           :disabled="isListening"
           @change="saveSpeechLang"
         >
@@ -816,11 +890,11 @@
           v-if="speechSupported"
           @click="toggleVoiceInput"
           :class="['mic-btn', { 'mic-btn--listening': isListening }]"
-          :title="isListening ? 'Stop listening' : 'Speak your question'"
+          :title="isListening ? 'Aufnahme stoppen' : 'Frage sprechen'"
           type="button"
         >
           <span v-if="isListening" class="mic-pulse"></span>
-          🎤
+          <UiIcon name="microphone" fallback="🎤" />
         </button>
         <button @click="sendPrompt" :disabled="loading || !prompt.trim()" class="send-btn">
           ↑
@@ -829,29 +903,58 @@
       <p v-if="speechError" class="upload-status upload-status--error">{{ speechError }}</p>
       <p v-else-if="uploadStatus" class="upload-status">{{ uploadStatus }}</p>
     </div>
+    </div><!-- /main-col -->
 
   </div>
 </template>
 
 <script>
 import { marked } from 'marked'
-import aircraftImg from './assets/aircraft.png'
+import { h } from 'vue'
+
+// Alle PNG-Icons aus assets automatisch laden (eager). Fehlt eine Datei, fällt
+// <UiIcon> auf das Emoji zurück — der Build bricht also nie, und sobald eine
+// passend benannte Datei in src/assets/ liegt, erscheint sie automatisch.
+const _iconModules = import.meta.glob('./assets/*.png', { eager: true, import: 'default' })
+const ICONS = {}
+for (const p in _iconModules) {
+  ICONS[p.split('/').pop().replace(/\.png$/, '')] = _iconModules[p]
+}
+
+// Wiederverwendbares Icon mit Emoji-Fallback.
+const UiIcon = {
+  name: 'UiIcon',
+  props: {
+    name: { type: String, required: true },
+    fallback: { type: String, default: '' },
+    cls: { type: String, default: 'ui-icon' },
+  },
+  render() {
+    const src = ICONS[this.name]
+    const cls = this.cls === 'ui-icon' ? 'ui-icon' : 'ui-icon ' + this.cls
+    return src
+      ? h('img', { src, class: cls, alt: '' })
+      : h('span', { class: 'ui-icon-emoji' }, this.fallback)
+  },
+}
 
 marked.use({ breaks: true })
 
 export default {
+  components: { UiIcon },
   data() {
     return {
-      aircraftImg,
+      chatId: '',
+      chats: [],
       prompt: '',
       messages: [],
       loading: false,
       currentTime: new Date(),
       quickSuggestions: [
-        'What should I focus on this week?',
-        'Create a study plan based on my calendar.',
-        'What classes do I have this week?',
-        'I only have 3 hours today.',
+        'Worauf sollte ich mich diese Woche konzentrieren?',
+        'Erstelle einen Lernplan basierend auf meinem Kalender.',
+        'Welche Kurse habe ich diese Woche?',
+        'Ich habe heute nur 3 Stunden Zeit.',
       ],
       uploading: false,
       activePanel: null,
@@ -866,28 +969,29 @@ export default {
         { value: 'en-GB', label: 'English (UK)' },
         { value: 'de-DE', label: 'Deutsch' }
       ],
-      jobAgentLoading: false,
-      jobAgentStatus: null,
+      lsfSyncing: false,
+      lsfSyncStatus: null,
       careerAnalysis: null,
       careerLoading: false,
       careerError: null,
       careerBarsAnimated: false,
       isDark: false,
       calendarEvents: [],
-      icsUploadStatus: null,
       calendarSearch: '',
       calendarShowAll: false,
-      calendarClearing: false,
-      gradesFile: null,
-      gradesFileName: '',
-      gradesLoading: false,
-      gradesStatus: null,
+      calView: 'month',
+      calRefDate: new Date(),
+      calShowAddForm: false,
+      userEventForm: { title: '', date: '', start: '', end: '', location: '' },
+      userEventSaving: false,
+      userEventStatus: null,
+      studyPlan: '',
+      studyPlanDate: '',
+      studyPlanLoading: false,
+      calWeekdayLabels: ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'],
+      calMonthNames: ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'],
       gradesData: null,
-      gradesClearing: false,
       plannerEvents: [],
-      plannerSubmitting: false,
-      plannerStatus: null,
-      plannerForm: { title: '', course_name: '', type: 'EXAM', date: '', description: '' },
       tutorView: 'setup',
       tutorDocuments: [],
       tutorSelectedDocs: [],
@@ -902,82 +1006,67 @@ export default {
       tutorResults: null,
       tutorStats: null,
       tutorStatsLoading: false,
-      langTutorLanguages: ['English', 'German', 'French', 'Spanish', 'Italian'],
-      langTutorLanguage: 'English',
-      langTutorInput: '',
-      langTutorHistory: [],
-      langTutorLoading: false,
-      langTutorError: null,
-      langTutorListening: false,
-      langTutorSpeechError: '',
-      langTutorProgress: { language: 'English', cefr_level: 'A1', xp: 0 },
-      focusForm: { focusMinutes: 30, breakMinutes: 5, cycles: 3 },
-      focusTheme: 'flight',
-      focusThemes: [
-        { id: 'flight', label: 'Flight', icon: '✈️' }
-      ],
-      focusMode: 'focus',
-      focusStatus: 'idle',
-      focusRemainingSeconds: 30 * 60,
-      focusCompletedCycles: 0,
-      focusTodayStats: { date: '', sessions: 0, completed_cycles: 0, total_focus_time: 0, themes: [] },
-      focusStatusMessage: null,
-      focusSuccessPulse: false,
-      focusBreakStarting: false,
-      focusMotivationIndex: 0,
-      focusMotivations: [
-        'Small blocks become serious momentum.',
-        'One clean interval. Keep the next minute simple.',
-        'Deep work now, lighter brain later.',
-        'Stay with the task. You are already moving.'
-      ],
+      evaluatorAnalysis: '',
+      evaluatorLoading: false,
+      tutorStatsResetting: false,
+      quizUploading: false,
+      quizUploadStatus: null,
+      moduleSuggested: false,
+      profileData: null,
+      profileLoading: false,
+      curriculumStatus: null,
+      curriculumUploading: false,
+      profileResetting: false,
+      cvStatus: null,
+      cvUploading: false,
       navItems: [
         {
           id: 'pruefungen',
           label: 'Prüfungen',
           icon: '📅',
+          iconName: 'reminder-appointment',
           entries: []
         },
         {
           id: 'quiz',
           label: 'Quiz',
           icon: '🧠',
+          iconName: 'web-test',
+          entries: []
+        },
+        {
+          id: 'profil',
+          label: 'Profil',
+          icon: '👤',
+          iconName: 'person',
           entries: []
         },
         {
           id: 'career',
           label: 'Career',
           icon: '💼',
+          iconName: 'briefcase',
           entries: []
         },
         {
           id: 'kalender',
           label: 'Kalender',
           icon: '📆',
+          iconName: 'calendar-2',
           entries: []
         },
         {
           id: 'noten',
           label: 'Noten',
           icon: '🎓',
+          iconName: 'graduation-cap',
           entries: []
         },
         {
           id: 'planner',
           label: 'Planner',
           icon: '📋',
-          entries: []
-        },
-        {
-          id: 'focus-time',
-          label: 'Focus Time',
-          icon: '⏱️',
-          entries: []
-        },
-        {
-          id: 'sprachtutor',
-          label: 'Language Tutor',
-          icon: '🗣️',
+          iconName: 'journal-alt',
           entries: []
         }
       ]
@@ -986,7 +1075,7 @@ export default {
   computed: {
     currentDateTimeStr() {
       const d = this.currentTime
-      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+      const days = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
       const dd = String(d.getDate()).padStart(2, '0')
       const mm = String(d.getMonth() + 1).padStart(2, '0')
       const hh = String(d.getHours()).padStart(2, '0')
@@ -1023,65 +1112,8 @@ export default {
       const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
       return [...this.gradesData.courses].sort((a, b) => parse(a.grade) - parse(b.grade))
     },
-    langTutorLocale() {
-      const map = { English: 'en-US', German: 'de-DE', French: 'fr-FR', Spanish: 'es-ES', Italian: 'it-IT' }
-      return map[this.langTutorLanguage] || 'en-US'
-    },
     bestCareerMatch() {
       return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
-    },
-    langTutorXpBarPct() {
-      return this.langTutorProgress.xp % 100
-    },
-    focusTotalSeconds() {
-      const minutes = this.focusMode === 'focus' ? this.focusForm.focusMinutes : this.focusForm.breakMinutes
-      return this.focusSecondsFromMinutes(minutes, this.focusMode === 'focus' ? 30 : 5, this.focusMode === 'focus' ? 240 : 120)
-    },
-    focusProgressPct() {
-      const elapsed = Math.max(0, this.focusTotalSeconds - this.focusRemainingSeconds)
-      return Math.min(100, Math.round((elapsed / this.focusTotalSeconds) * 100))
-    },
-    focusSceneStyle() {
-      const ratio = this.focusProgressPct / 100
-      const takeoff = Math.min(1, ratio / 0.18)
-      const landing = Math.max(0, (ratio - 0.82) / 0.18)
-      const cruiseBob = Math.sin(ratio * Math.PI * 5) * 5
-      const routeArc = Math.sin(ratio * Math.PI) * -82
-      const flightY = 36 - (68 * takeoff) + (64 * landing) + routeArc + cruiseBob
-      const tilt = ratio < 0.18
-        ? -13 + (takeoff * 7)
-        : ratio > 0.82
-          ? -4 + (landing * 12)
-          : Math.sin(ratio * Math.PI * 4) * 3
-      return {
-        '--focus-progress': this.focusProgressPct + '%',
-        '--focus-ratio': ratio,
-        '--flight-left': `calc(8% + ${ratio * 84}%)`,
-        '--flight-y': flightY + 'px',
-        '--flight-tilt': tilt + 'deg',
-        '--flight-route-progress': this.focusProgressPct,
-        '--flight-trail-opacity': this.focusMode === 'break' ? 0.18 : Math.min(0.82, 0.18 + ratio * 0.7),
-        '--flight-shadow-scale': 1.25 - Math.sin(ratio * Math.PI) * 0.45
-      }
-    },
-    focusRemainingLabel() {
-      return this.formatFocusSeconds(this.focusRemainingSeconds)
-    },
-    focusFinalCountdownActive() {
-      return this.focusStatus === 'running' && this.focusRemainingSeconds > 0 && this.focusRemainingSeconds <= 10
-    },
-    focusModeLabel() {
-      return this.focusMode === 'focus' ? 'Focus Mode' : 'Break Mode'
-    },
-    focusRouteLabel() {
-      if (this.focusMode === 'break') return 'Calm reset before the next round'
-      return 'Berlin to Paris'
-    },
-    focusSummaryText() {
-      return `Today you completed ${this.focusTodayStats.sessions} focus sessions and ${this.formatFocusMinutes(this.focusTodayStats.total_focus_time)} minutes of deep work.`
-    },
-    focusMotivation() {
-      return this.focusMotivations[this.focusMotivationIndex % this.focusMotivations.length]
     },
     currentQuestion() {
       if (!this.tutorQuiz) return null
@@ -1119,17 +1151,114 @@ export default {
         groups[key].events.push(event)
       }
       return Object.values(groups)
+    },
+    // ── Kalender (Tag/Woche/Monat) ──────────────────────────────
+    _calEventsByDay() {
+      // Vereinheitlicht Stundenplan (lsf), eigene Termine (user) und Planner-Deadlines.
+      const byDay = {}
+      const push = (key, item) => { (byDay[key] = byDay[key] || []).push(item) }
+
+      for (const e of this.calendarEvents) {
+        const d = new Date(e.start_time)
+        push(this._dayKey(d), {
+          id: 'c' + e.id,
+          rawId: e.id,
+          kind: e.source === 'user' ? 'user' : 'class',
+          title: e.source === 'user' ? e.title : this.parseCourseName(e.title),
+          start_time: e.start_time,
+          end_time: e.end_time,
+          location: e.location,
+          description: e.description,
+          allDay: false,
+        })
+      }
+      // Planner-Deadlines (Prüfungen/Abgaben/Präsentationen) als ganztägige Marker
+      for (const ev of this.plannerEvents) {
+        const d = new Date(ev.date + 'T00:00:00')
+        push(this._dayKey(d), {
+          id: 'p' + ev.id,
+          kind: 'deadline',
+          title: ev.title,
+          deadlineType: ev.type,
+          start_time: null,
+          end_time: null,
+          location: null,
+          allDay: true,
+        })
+      }
+      for (const k in byDay) {
+        byDay[k].sort((a, b) =>
+          (a.allDay ? 0 : 1) - (b.allDay ? 0 : 1) ||
+          (new Date(a.start_time || 0) - new Date(b.start_time || 0))
+        )
+      }
+      return byDay
+    },
+    calMonthGrid() {
+      const ref = this.calRefDate
+      const year = ref.getFullYear(), month = ref.getMonth()
+      const first = new Date(year, month, 1)
+      const startDow = (first.getDay() + 6) % 7        // Montag = 0
+      const gridStart = new Date(year, month, 1 - startDow)
+      const byDay = this._calEventsByDay
+      const todayKey = this._dayKey(new Date())
+      const weeks = []
+      for (let w = 0; w < 6; w++) {
+        const week = []
+        for (let d = 0; d < 7; d++) {
+          const date = new Date(gridStart)
+          date.setDate(gridStart.getDate() + w * 7 + d)
+          const key = this._dayKey(date)
+          week.push({ key, date, inMonth: date.getMonth() === month, isToday: key === todayKey, events: byDay[key] || [] })
+        }
+        weeks.push(week)
+      }
+      // letzte voll-außerhalb-liegende Woche weglassen
+      while (weeks.length > 4 && weeks[weeks.length - 1].every(d => !d.inMonth)) weeks.pop()
+      return weeks
+    },
+    calWeekDays() {
+      const ref = this.calRefDate
+      const dow = (ref.getDay() + 6) % 7
+      const monday = new Date(ref)
+      monday.setDate(ref.getDate() - dow)
+      const byDay = this._calEventsByDay
+      const todayKey = this._dayKey(new Date())
+      const days = []
+      for (let i = 0; i < 7; i++) {
+        const date = new Date(monday)
+        date.setDate(monday.getDate() + i)
+        const key = this._dayKey(date)
+        days.push({ key, date, isToday: key === todayKey, events: byDay[key] || [] })
+      }
+      return days
+    },
+    calDayEvents() {
+      return this._calEventsByDay[this._dayKey(this.calRefDate)] || []
+    },
+    calPeriodLabel() {
+      const ref = this.calRefDate
+      if (this.calView === 'month') return `${this.calMonthNames[ref.getMonth()]} ${ref.getFullYear()}`
+      if (this.calView === 'week') {
+        const days = this.calWeekDays
+        const a = days[0].date, b = days[6].date
+        const f = d => `${d.getDate()}.${d.getMonth() + 1}.`
+        return `${f(a)} – ${f(b)}${b.getFullYear()}`
+      }
+      const wd = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
+      return `${wd[ref.getDay()]}, ${ref.getDate()}. ${this.calMonthNames[ref.getMonth()]} ${ref.getFullYear()}`
     }
   },
   mounted() {
     this.isDark = localStorage.getItem('darkMode') === 'true'
+    this.studyPlan = localStorage.getItem('studyPlan') || ''
+    this.studyPlanDate = localStorage.getItem('studyPlanDate') || ''
+    this.initChatId()
     this.fetchCalendarEvents()
     this.fetchPlannerEvents()
     this.fetchTutorDocuments()
     this.fetchGrades()
-    this.fetchLangTutorProgress()
     this.fetchCareerAnalysis()
-    this.fetchFocusStats()
     this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
@@ -1144,9 +1273,7 @@ export default {
   },
   beforeUnmount() {
     clearInterval(this._clockTimer)
-    clearInterval(this._focusTimer)
     if (this._recognition) this._recognition.abort()
-    if (this._langTutorRecognition) this._langTutorRecognition.abort()
   },
   methods: {
     toggleDark() {
@@ -1155,196 +1282,126 @@ export default {
     },
     togglePanel(id) {
       this.activePanel = this.activePanel === id ? null : id
+      if (this.activePanel === 'profil') { this.fetchProfile(); this.fetchCurriculumStatus() }
+      if (this.activePanel === 'career' && this.cvStatus === null) this.fetchCvStatus()
     },
     closePanel() {
       this.activePanel = null
     },
-    normalizeFocusNumber(value, fallback, max, min = 0.1) {
-      const n = Number(String(value).replace(',', '.'))
-      if (!Number.isFinite(n)) return fallback
-      return Math.min(max, Math.max(min, Math.round(n * 10) / 10))
+    _genChatId() {
+      return (crypto.randomUUID && crypto.randomUUID()) || ('chat-' + Date.now() + '-' + Math.random().toString(16).slice(2))
     },
-    focusSecondsFromMinutes(minutes, fallback, max) {
-      return Math.max(1, Math.round(this.normalizeFocusNumber(minutes, fallback, max) * 60))
+    persistChats() {
+      localStorage.setItem('chats', JSON.stringify(this.chats))
     },
-    syncFocusSettings() {
-      this.focusForm.focusMinutes = this.normalizeFocusNumber(this.focusForm.focusMinutes, 30, 240)
-      this.focusForm.breakMinutes = this.normalizeFocusNumber(this.focusForm.breakMinutes, 5, 120)
-      this.focusForm.cycles = this.normalizeFocusNumber(this.focusForm.cycles, 3, 12, 1)
-      if (this.focusStatus === 'idle' || this.focusStatus === 'completed') {
-        this.focusMode = 'focus'
-        this.focusCompletedCycles = 0
-        this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.focusMinutes, 30, 240)
-        this.focusStatus = 'idle'
+    loadMessages() {
+      try {
+        this.messages = JSON.parse(localStorage.getItem('chat:' + this.chatId + ':messages') || '[]')
+      } catch { this.messages = [] }
+    },
+    saveMessages() {
+      try {
+        localStorage.setItem('chat:' + this.chatId + ':messages', JSON.stringify(this.messages))
+      } catch { /* localStorage voll — ignorieren */ }
+    },
+    updateChatTitle(text) {
+      const c = this.chats.find(c => c.id === this.chatId)
+      if (c && (!c.title || c.title === 'Neuer Chat')) {
+        c.title = text.trim().slice(0, 40) || 'Neuer Chat'
+        this.persistChats()
       }
     },
-    selectFocusTheme(theme) {
-      this.focusTheme = theme
-      localStorage.setItem('focusTheme', theme)
+    truncateName(name, max = 24) {
+      if (!name) return ''
+      if (name.length <= max) return name
+      const dot = name.lastIndexOf('.')
+      const ext = dot > 0 ? name.slice(dot) : ''
+      const base = dot > 0 ? name.slice(0, dot) : name
+      const keep = Math.max(4, max - ext.length - 1)
+      return base.slice(0, keep) + '…' + ext
     },
-    formatFocusSeconds(totalSeconds) {
-      const safe = Math.max(0, Math.floor(totalSeconds))
-      const minutes = Math.floor(safe / 60)
-      const seconds = safe % 60
-      return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-    },
-    formatFocusMinutes(minutes) {
-      const n = Number(minutes)
-      if (!Number.isFinite(n)) return '0'
-      return Number.isInteger(n) ? String(n) : n.toFixed(1)
-    },
-    todayIsoDate() {
-      const d = new Date()
-      const yyyy = d.getFullYear()
-      const mm = String(d.getMonth() + 1).padStart(2, '0')
-      const dd = String(d.getDate()).padStart(2, '0')
-      return `${yyyy}-${mm}-${dd}`
-    },
-    startFocusTimer() {
-      this.syncFocusSettings()
-      clearInterval(this._focusTimer)
-      this.focusMode = 'focus'
-      this.focusCompletedCycles = 0
-      this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.focusMinutes, 30, 240)
-      this.focusStatus = 'running'
-      this.focusStatusMessage = null
-      this.focusMotivationIndex = 0
-      this.focusBreakStarting = false
-      this._focusTimer = setInterval(() => this.tickFocusTimer(), 1000)
-    },
-    pauseFocusTimer() {
-      if (this.focusStatus !== 'running') return
-      clearInterval(this._focusTimer)
-      this.focusStatus = 'paused'
-      this.focusStatusMessage = { type: 'info', message: 'Timer paused.' }
-    },
-    resumeFocusTimer() {
-      if (this.focusStatus !== 'paused') return
-      clearInterval(this._focusTimer)
-      this.focusStatus = 'running'
-      this.focusStatusMessage = null
-      this.focusBreakStarting = false
-      this._focusTimer = setInterval(() => this.tickFocusTimer(), 1000)
-    },
-    resetFocusTimer() {
-      clearInterval(this._focusTimer)
-      this.syncFocusSettings()
-      this.focusMode = 'focus'
-      this.focusStatus = 'idle'
-      this.focusCompletedCycles = 0
-      this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.focusMinutes, 30, 240)
-      this.focusStatusMessage = null
-      this.focusSuccessPulse = false
-      this.focusBreakStarting = false
-    },
-    skipToBreak() {
-      if (this.focusStatus === 'completed') return
-      this.focusMode = 'break'
-      this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.breakMinutes, 5, 120)
-      this.focusStatusMessage = { type: 'info', message: 'Skipped to break mode.' }
-      if (this.focusStatus === 'idle') this.focusStatus = 'paused'
-    },
-    skipToFocus() {
-      if (this.focusStatus === 'completed') return
-      this.focusMode = 'focus'
-      this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.focusMinutes, 30, 240)
-      this.focusStatusMessage = { type: 'info', message: 'Skipped to focus mode.' }
-      if (this.focusStatus === 'idle') this.focusStatus = 'paused'
-    },
-    tickFocusTimer() {
-      if (this.focusStatus !== 'running') return
-      this.focusRemainingSeconds = Math.max(0, this.focusRemainingSeconds - 1)
-      if (this.focusMode === 'focus' && this.focusRemainingSeconds > 0 && this.focusRemainingSeconds % 420 === 0) {
-        this.focusMotivationIndex++
-      }
-      if (this.focusRemainingSeconds === 0) this.completeFocusSegment()
-    },
-    async completeFocusSegment() {
-      clearInterval(this._focusTimer)
-      this.playFocusNotification()
-      this.focusSuccessPulse = true
-      setTimeout(() => { this.focusSuccessPulse = false }, 1400)
-
-      if (this.focusMode === 'focus') {
-        this.focusCompletedCycles += 1
-        const statsSaved = await this.saveFocusSession()
-        if (this.focusCompletedCycles >= this.focusForm.cycles) {
-          this.focusStatus = 'completed'
-          this.focusRemainingSeconds = 0
-          this.focusStatusMessage = statsSaved
-            ? { type: 'success', message: 'All focus cycles completed. Nice work.' }
-            : { type: 'error', message: 'All cycles completed, but focus stats could not be saved.' }
-          return
+    initChatId() {
+      // Persistente Chat-Liste laden; aktiven Chat bestimmen/erstellen.
+      try { this.chats = JSON.parse(localStorage.getItem('chats') || '[]') } catch { this.chats = [] }
+      let id = localStorage.getItem('chatId')
+      if (!id || !this.chats.find(c => c.id === id)) {
+        if (this.chats.length > 0) {
+          id = this.chats[0].id
+        } else {
+          id = this._genChatId()
+          this.chats.unshift({ id, title: 'Neuer Chat', createdAt: Date.now() })
         }
-        this.focusMode = 'break'
-        this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.breakMinutes, 5, 120)
-        this.focusBreakStarting = true
-        setTimeout(() => { this.focusBreakStarting = false }, 2600)
-        this.focusStatusMessage = statsSaved
-          ? { type: 'success', message: 'Focus complete. Break started automatically.' }
-          : { type: 'error', message: 'Break started, but focus stats could not be saved.' }
-      } else {
-        this.focusMode = 'focus'
-        this.focusRemainingSeconds = this.focusSecondsFromMinutes(this.focusForm.focusMinutes, 30, 240)
-        this.focusStatusMessage = { type: 'success', message: 'Break complete. Focus mode started automatically.' }
       }
-
-      this.focusStatus = 'running'
-      this._focusTimer = setInterval(() => this.tickFocusTimer(), 1000)
+      this.chatId = id
+      localStorage.setItem('chatId', id)
+      this.persistChats()
+      this.loadMessages()
     },
-    playFocusNotification() {
-      try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext
-        if (!AudioContext) return
-        const ctx = new AudioContext()
-        const osc = ctx.createOscillator()
-        const gain = ctx.createGain()
-        osc.type = 'sine'
-        osc.frequency.setValueAtTime(740, ctx.currentTime)
-        osc.frequency.setValueAtTime(940, ctx.currentTime + 0.12)
-        gain.gain.setValueAtTime(0.0001, ctx.currentTime)
-        gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02)
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35)
-        osc.connect(gain)
-        gain.connect(ctx.destination)
-        osc.start()
-        osc.stop(ctx.currentTime + 0.38)
-      } catch {
-        // Browsers may block audio until user interaction; the timer still works.
+    newChat() {
+      // Startet einen frischen Chat: neue chat_id, eigener Verlauf + Dokumente.
+      const id = this._genChatId()
+      this.chats.unshift({ id, title: 'Neuer Chat', createdAt: Date.now() })
+      this.persistChats()
+      this.chatId = id
+      localStorage.setItem('chatId', id)
+      this.messages = []
+      this.saveMessages()
+      this.tutorDocuments = []
+      this.tutorSelectedDocs = []
+      this.uploadStatus = ''
+      this.activePanel = null
+      this.fetchTutorDocuments()
+    },
+    switchChat(id) {
+      this.activePanel = null
+      if (id === this.chatId) return
+      this.saveMessages()              // aktuellen Chat sichern
+      this.chatId = id
+      localStorage.setItem('chatId', id)
+      this.loadMessages()
+      this.tutorSelectedDocs = []
+      this.uploadStatus = ''
+      this.fetchTutorDocuments()
+    },
+    deleteChat(id) {
+      this.chats = this.chats.filter(c => c.id !== id)
+      localStorage.removeItem('chat:' + id + ':messages')
+      this.persistChats()
+      if (id === this.chatId) {
+        if (this.chats.length === 0) {
+          this.newChat()
+        } else {
+          this.chatId = this.chats[0].id
+          localStorage.setItem('chatId', this.chatId)
+          this.loadMessages()
+          this.fetchTutorDocuments()
+        }
       }
     },
-    async saveFocusSession() {
+    async syncLsf() {
+      // Lädt Noten, Termine, Prüfungen und Kalender frisch aus dem LSF-Mock in die DB
+      // und aktualisiert anschließend alle Ansichten.
+      this.lsfSyncing = true
+      this.lsfSyncStatus = null
       try {
-        const res = await fetch('/api/focus-time/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            date: this.todayIsoDate(),
-            focus_minutes: this.focusForm.focusMinutes,
-            break_minutes: this.focusForm.breakMinutes,
-            completed_cycles: 1,
-            selected_theme: this.focusTheme
-          })
-        })
-        if (res.ok) {
-          await this.fetchFocusStats()
-          return true
+        const res = await fetch('/api/lsf/sync', { method: 'POST' })
+        if (!res.ok) throw new Error('sync failed')
+        const data = await res.json()
+        await Promise.all([
+          this.fetchCalendarEvents(),
+          this.fetchPlannerEvents(),
+          this.fetchGrades(),
+          this.fetchCareerAnalysis(),
+        ])
+        this.lsfSyncStatus = {
+          type: 'success',
+          message: `✓ ${data.grades} Noten, ${data.calendar_events} Termine, ${data.exams} Prüfungen`,
         }
       } catch {
-        return false
+        this.lsfSyncStatus = { type: 'error', message: 'LSF-Sync fehlgeschlagen.' }
+      } finally {
+        this.lsfSyncing = false
       }
-      return false
-    },
-    async fetchFocusStats() {
-      const day = this.todayIsoDate()
-      try {
-        const res = await fetch(`/api/focus-time/today?day=${day}`)
-        if (res.ok) this.focusTodayStats = await res.json()
-      } catch {
-        // Keep the timer usable even when the backend is unavailable.
-      }
-      const savedTheme = localStorage.getItem('focusTheme')
-      if (savedTheme && this.focusThemes.some(t => t.id === savedTheme)) this.focusTheme = savedTheme
     },
     renderMarkdown(text) {
       if (!text) return ''
@@ -1544,6 +1601,7 @@ export default {
       this.messages.push({ role: 'user', content: userPrompt })
       this.messages.push({ role: 'assistant', content: '' })
       this.loading = true
+      this.updateChatTitle(userPrompt)
 
       await this.$nextTick()
       this.scrollToBottom()
@@ -1561,12 +1619,13 @@ export default {
             this.messages[this.messages.length - 1].content = data.answer
           } else {
             this.messages[this.messages.length - 1].content =
-              'The Study Advisor could not process your request. Please try again.'
+              'Der Lernberater konnte deine Anfrage nicht verarbeiten. Bitte versuche es erneut.'
           }
         } catch {
           this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
         } finally {
           this.loading = false
+          this.saveMessages()
         }
         return
       }
@@ -1577,7 +1636,7 @@ export default {
         const res = await fetch('/api/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: userPrompt })
+          body: JSON.stringify({ prompt: userPrompt, chat_id: this.chatId })
         })
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -1602,28 +1661,27 @@ export default {
         this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
       } finally {
         this.loading = false
+        this.saveMessages()
       }
     },
-    async launchJobAgent() {
-      this.jobAgentLoading = true
-      this.jobAgentStatus = null
-      try {
-        const res = await fetch('/api/job-agent/run', { //F appeler B 
-          method: 'POST',//Je ne veux pas seulement lire des données.Je veux déclencher une action.
-          headers: { 'Content-Type': 'application/json' }, //BE : Je vais t'envoyer du JSON.
-          body: JSON.stringify({}) 
-        })
-        if (res.ok) {
-          this.jobAgentStatus = { type: 'success', message: 'Job Search Agent launched!' }
-        } else {
-          const data = await res.json().catch(() => ({}))
-          this.jobAgentStatus = { type: 'error', message: data.detail || 'Failed to launch agent.' }
-        }
-      } catch {
-        this.jobAgentStatus = { type: 'error', message: 'Error: Backend not reachable.' }
-      } finally {
-        this.jobAgentLoading = false
-      }
+    _dayKey(d) {
+      return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+    },
+    calToday() {
+      this.calRefDate = new Date()
+    },
+    calSelectDay(date) {
+      this.calRefDate = new Date(date)
+      this.calView = 'day'
+    },
+    calPrev() { this._calShift(-1) },
+    calNext() { this._calShift(1) },
+    _calShift(dir) {
+      const d = new Date(this.calRefDate)
+      if (this.calView === 'month') d.setMonth(d.getMonth() + dir)
+      else if (this.calView === 'week') d.setDate(d.getDate() + 7 * dir)
+      else d.setDate(d.getDate() + dir)
+      this.calRefDate = d
     },
     async fetchCalendarEvents() {
       try {
@@ -1635,6 +1693,86 @@ export default {
         // Backend nicht erreichbar beim Start — kein Fehler anzeigen
       }
     },
+    async addUserEvent() {
+      const f = this.userEventForm
+      if (!f.title || !f.date || !f.start || !f.end) return
+      this.userEventSaving = true
+      this.userEventStatus = null
+      // Datum + Uhrzeit zu ISO (lokale Zeit) zusammensetzen
+      const toIso = (d, t) => new Date(`${d}T${t}:00`).toISOString()
+      try {
+        const res = await fetch('/api/calendar/events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: f.title,
+            start_time: toIso(f.date, f.start),
+            end_time: toIso(f.date, f.end),
+            location: f.location || null,
+          })
+        })
+        if (res.ok) {
+          await this.fetchCalendarEvents()
+          this.calShowAddForm = false
+          this.userEventForm = { title: '', date: '', start: '', end: '', location: '' }
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.userEventStatus = { type: 'error', message: data.detail || 'Termin konnte nicht gespeichert werden.' }
+        }
+      } catch {
+        this.userEventStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.userEventSaving = false
+      }
+    },
+    async deleteUserEvent(id) {
+      if (!confirm('Diesen Termin löschen?')) return
+      try {
+        const res = await fetch('/api/calendar/events/' + id, { method: 'DELETE' })
+        if (res.ok) await this.fetchCalendarEvents()
+      } catch { /* silent */ }
+    },
+    async generateStudyPlan() {
+      this.studyPlanLoading = true
+      this.studyPlan = ''
+      try {
+        const res = await fetch('/api/planner/study-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ horizon_days: 7 })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          this.studyPlan = data.plan || ''
+          if (this.studyPlan) {
+            this.studyPlanDate = new Date().toISOString()
+            try {
+              localStorage.setItem('studyPlan', this.studyPlan)
+              localStorage.setItem('studyPlanDate', this.studyPlanDate)
+            } catch { /* localStorage voll */ }
+          }
+        } else {
+          this.studyPlan = 'Der Lernplan konnte gerade nicht erstellt werden. Bitte später erneut versuchen.'
+        }
+      } catch {
+        this.studyPlan = 'Backend nicht erreichbar.'
+      } finally {
+        this.studyPlanLoading = false
+      }
+    },
+    clearStudyPlan() {
+      this.studyPlan = ''
+      this.studyPlanDate = ''
+      localStorage.removeItem('studyPlan')
+      localStorage.removeItem('studyPlanDate')
+    },
+    formatPlanDate(iso) {
+      try {
+        return 'erstellt ' + new Date(iso).toLocaleString('de-DE', {
+          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        }) + ' Uhr'
+      } catch { return '' }
+    },
     formatTime(isoString) {
       return new Date(isoString).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
     },
@@ -1644,9 +1782,9 @@ export default {
       const today = new Date()
       today.setHours(0, 0, 0, 0)
       const diff = Math.round((eventDay - today) / 86400000)
-      if (diff === 0) return 'Today'
-      if (diff === 1) return 'Tomorrow'
-      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+      if (diff === 0) return 'Heute'
+      if (diff === 1) return 'Morgen'
+      const days = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
       if (diff <= 6) return days[new Date(isoString).getDay()]
       const d = new Date(isoString)
       return `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`
@@ -1705,52 +1843,6 @@ export default {
       return ''
     },
     //send(file) not possible
-    async uploadIcsFile(event) {
-      const file = event.target.files[0]
-      if (!file) return
-      event.target.value = ''
-
-      const webhookUrl = import.meta.env.VITE_N8N_CALENDAR_WEBHOOK_URL
-      if (!webhookUrl) {
-        this.icsUploadStatus = { type: 'error', message: 'VITE_N8N_CALENDAR_WEBHOOK_URL nicht konfiguriert.' }
-        return
-      }
-
-      this.icsUploadStatus = { type: 'info', message: `"${file.name}" wird gesendet...` }
-      const formData = new FormData()
-      formData.append('file', file)
-
-      try {
-        const res = await fetch(webhookUrl, { method: 'POST', body: formData })
-        if (res.ok) {
-          this.icsUploadStatus = { type: 'success', message: 'Kalender erfolgreich synchronisiert!' }
-          setTimeout(() => this.fetchCalendarEvents(), 2000)
-        } else {
-          this.icsUploadStatus = { type: 'error', message: `Fehler vom n8n-Webhook (${res.status}).` }
-        }
-      } catch {
-        this.icsUploadStatus = { type: 'error', message: 'n8n-Webhook nicht erreichbar.' }
-      }
-    },
-    async clearCalendar() {
-      if (!confirm('Alle Kalender-Events löschen?')) return
-      this.calendarClearing = true
-      try {
-        const res = await fetch('/api/calendar/events', { method: 'DELETE' })
-        if (res.ok) {
-          this.calendarEvents = []
-          this.calendarSearch = ''
-          this.calendarShowAll = false
-          this.icsUploadStatus = { type: 'success', message: 'Kalender geleert.' }
-        } else {
-          this.icsUploadStatus = { type: 'error', message: 'Fehler beim Löschen.' }
-        }
-      } catch {
-        this.icsUploadStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
-      } finally {
-        this.calendarClearing = false
-      }
-    },
     async uploadFile(event) {
       const file = event.target.files[0]
       if (!file || this.uploading) return
@@ -1766,6 +1858,7 @@ export default {
 
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('chat_id', this.chatId)
 
       try {
         const res = await fetch('/api/upload', { method: 'POST', body: formData })
@@ -1774,10 +1867,12 @@ export default {
           this.fetchTutorDocuments()
           this.messages.push({
             role: 'assistant',
+            kind: 'success',
             content:
-              `✅ **"${file.name}"** wurde erfolgreich hochgeladen.\n\n` +
+              `**${this.truncateName(file.name, 40)}** wurde erfolgreich hochgeladen.\n\n` +
               `Das Dokument wird im Hintergrund verarbeitet. Du kannst in wenigen Sekunden Fragen dazu stellen.`
           })
+          this.saveMessages()
           this.$nextTick(() => this.scrollToBottom())
         } else {
           const data = await res.json().catch(() => ({}))
@@ -1787,39 +1882,6 @@ export default {
         this.uploadStatus = 'Fehler: Backend nicht erreichbar.'
       } finally {
         this.uploading = false
-      }
-    },
-    selectGradesPdf(event) {
-      const file = event.target.files[0]
-      if (!file) return
-      this.gradesFile = file
-      this.gradesFileName = file.name
-      this.gradesData = null
-      this.gradesStatus = null
-      event.target.value = ''
-    },
-    async extractGrades() {
-      if (!this.gradesFile) return
-      this.gradesLoading = true
-      this.gradesStatus = { type: 'info', message: 'PDF wird verarbeitet...' }
-      const formData = new FormData()
-      formData.append('file', this.gradesFile)
-      try {
-        const res = await fetch('/api/grades/upload', { method: 'POST', body: formData })
-        if (res.ok) {
-          this.gradesData = await res.json()
-          this.gradesStatus = this.gradesData.courses.length > 0
-            ? { type: 'success', message: `${this.gradesData.courses.length} Kurse extrahiert und gespeichert.` }
-            : { type: 'info', message: 'Keine Noten im Dokument gefunden.' }
-          this.fetchCareerAnalysis()
-        } else {
-          const data = await res.json().catch(() => ({}))
-          this.gradesStatus = { type: 'error', message: data.detail || 'Fehler bei der Extraktion.' }
-        }
-      } catch {
-        this.gradesStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
-      } finally {
-        this.gradesLoading = false
       }
     },
     async fetchGrades() {
@@ -1833,28 +1895,6 @@ export default {
         // Backend nicht erreichbar beim Start — kein Fehler anzeigen
       }
     },
-    async clearGrades() {
-      if (!confirm('Alle gespeicherten Noten löschen?')) return
-      this.gradesClearing = true
-      try {
-        const res = await fetch('/api/grades', { method: 'DELETE' })
-        if (res.ok) {
-          this.gradesData = null
-          this.gradesFile = null
-          this.gradesFileName = ''
-          this.gradesStatus = { type: 'success', message: 'Noten gelöscht.' }
-          this.fetchCareerAnalysis()
-        } else {
-          this.gradesStatus = { type: 'error', message: 'Fehler beim Löschen.' }
-        }
-      } catch {
-        this.gradesStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
-      } finally {
-        this.gradesClearing = false
-      }
-    },
-
-    // --- CAREER PROFILE ---
     async fetchCareerAnalysis() {
       this.careerLoading = true
       this.careerError = null
@@ -1877,14 +1917,13 @@ export default {
         this.careerLoading = false
       }
     },
-    marketDemandIcon(level) {
-      const map = { 'Very High': '🟢', 'High': '🟡', 'Medium': '🟠', 'Low': '🔴' }
-      return map[level] || '🟠'
-    },
     marketDemandStars(level) {
       const map = { 'Very High': 5, 'High': 4, 'Medium': 3, 'Low': 2 }
       const filled = map[level] || 3
       return '★'.repeat(filled) + '☆'.repeat(5 - filled)
+    },
+    demandLabel(level) {
+      return { 'Very High': 'Sehr hoch', 'High': 'Hoch', 'Medium': 'Mittel', 'Low': 'Niedrig' }[level] || level
     },
     skillIcon(name) {
       const n = (name || '').toLowerCase()
@@ -1907,132 +1946,6 @@ export default {
     // --- END CAREER PROFILE ---
 
     // --- AI LANGUAGE TUTOR ---
-    selectLangTutorLanguage(lang) {
-      if (lang === this.langTutorLanguage) return
-      this.langTutorLanguage = lang
-      this.langTutorHistory = []
-      this.langTutorInput = ''
-      this.langTutorError = null
-      this.fetchLangTutorProgress()
-    },
-    async fetchLangTutorProgress() {
-      try {
-        const res = await fetch(`/api/ai/language-tutor/progress/${encodeURIComponent(this.langTutorLanguage)}`)
-        if (res.ok) this.langTutorProgress = await res.json()
-      } catch {
-        // Backend nicht erreichbar beim Start — kein Fehler anzeigen
-      }
-    },
-    scrollLangTutorToBottom() {
-      const el = this.$refs.langTutorMessages
-      if (el) el.scrollTop = el.scrollHeight
-    },
-    async sendLangTutorMessage() {
-      const text = this.langTutorInput.trim()
-      if (!text || this.langTutorLoading) return
-
-      this.langTutorInput = ''
-      this.langTutorError = null
-      // Assistant turns carry the conversational reply + the question that was asked,
-      // so Gemini sees what it already said and doesn't repeat itself.
-      const historyForRequest = this.langTutorHistory.map(h => ({
-        role: h.role,
-        text: h.role === 'assistant' ? [h.reply, h.next_question].filter(Boolean).join(' ') : h.text
-      }))
-      this.langTutorHistory.push({ role: 'user', text })
-      this.langTutorLoading = true
-      await this.$nextTick()
-      this.scrollLangTutorToBottom()
-
-      try {
-        const res = await fetch('/api/ai/language-tutor', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ language: this.langTutorLanguage, message: text, history: historyForRequest })
-        })
-        if (res.ok) {
-          const data = await res.json()
-          this.langTutorHistory.push({ role: 'assistant', ...data })
-          if (data.progress) this.langTutorProgress = data.progress
-        } else {
-          const data = await res.json().catch(() => ({}))
-          this.langTutorError = data.detail || 'Der Sprachtutor konnte die Anfrage nicht verarbeiten.'
-        }
-      } catch {
-        this.langTutorError = 'Backend nicht erreichbar.'
-      } finally {
-        this.langTutorLoading = false
-        await this.$nextTick()
-        this.scrollLangTutorToBottom()
-      }
-    },
-    toggleLangTutorVoiceInput() {
-      if (!this.speechSupported) {
-        this.langTutorSpeechError = 'Voice input is not supported in this browser.'
-        return
-      }
-      if (this.langTutorListening) {
-        this._langTutorManualStop = true
-        this._langTutorRecognition?.stop()
-      } else {
-        this._langTutorManualStop = false
-        this.startLangTutorVoiceInput()
-      }
-    },
-    async startLangTutorVoiceInput() {
-      const micCheck = await this.ensureMicrophoneAccess()
-      if (!micCheck.ok) {
-        this.langTutorListening = false
-        this.langTutorSpeechError = 'Microphone access was denied or unavailable.'
-        return
-      }
-
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      const recognition = new SpeechRecognition()
-      recognition.lang = this.langTutorLocale
-      recognition.continuous = false
-      recognition.interimResults = true
-      recognition.maxAlternatives = 1
-
-      recognition.onstart = () => {
-        this.langTutorListening = true
-        this.langTutorSpeechError = ''
-      }
-      recognition.onresult = (event) => {
-        let transcript = ''
-        for (let i = 0; i < event.results.length; i++) transcript += event.results[i][0].transcript
-        this.langTutorInput = transcript
-      }
-      recognition.onerror = (event) => {
-        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          this.langTutorSpeechError = 'Microphone access was denied. Please allow microphone permission and try again.'
-        } else if (event.error === 'no-speech') {
-          this.langTutorSpeechError = 'No speech detected. Please try again.'
-        } else if (event.error !== 'aborted') {
-          this.langTutorSpeechError = `Voice recognition error: ${event.error}`
-        }
-      }
-      recognition.onend = () => {
-        this.langTutorListening = false
-        this._langTutorRecognition = null
-        // Voice conversation mode: once speech ends, send automatically instead
-        // of waiting for the student to press the send button.
-        if (!this._langTutorManualStop && this.langTutorInput.trim()) {
-          this.sendLangTutorMessage()
-        }
-        this._langTutorManualStop = false
-      }
-
-      this._langTutorRecognition = recognition
-      try {
-        recognition.start()
-      } catch {
-        this.langTutorSpeechError = 'Could not start voice recognition.'
-        this.langTutorListening = false
-      }
-    },
-    // --- END AI LANGUAGE TUTOR ---
-
     async fetchPlannerEvents() {
       try {
         const res = await fetch('/api/planner/events')
@@ -2041,50 +1954,13 @@ export default {
         // Backend nicht erreichbar beim Start — kein Fehler anzeigen
       }
     },
-    async submitPlannerEvent() {
-      if (!this.plannerForm.title.trim() || !this.plannerForm.course_name.trim() || !this.plannerForm.date) return
-      this.plannerSubmitting = true
-      this.plannerStatus = null
-      try {
-        const res = await fetch('/api/planner/events', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: this.plannerForm.title.trim(),
-            course_name: this.plannerForm.course_name.trim(),
-            type: this.plannerForm.type,
-            date: this.plannerForm.date,
-            description: this.plannerForm.description.trim() || null,
-          })
-        })
-        if (res.ok) {
-          this.plannerStatus = { type: 'success', message: 'Event gespeichert!' }
-          this.plannerForm = { title: '', course_name: '', type: 'EXAM', date: '', description: '' }
-          await this.fetchPlannerEvents()
-          setTimeout(() => { this.plannerStatus = null }, 3000)
-        } else {
-          const data = await res.json().catch(() => ({}))
-          this.plannerStatus = { type: 'error', message: data.detail || 'Fehler beim Speichern.' }
-        }
-      } catch {
-        this.plannerStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
-      } finally {
-        this.plannerSubmitting = false
-      }
-    },
-    async deletePlannerEvent(id) {
-      try {
-        const res = await fetch(`/api/planner/events/${id}`, { method: 'DELETE' })
-        if (res.ok || res.status === 204) {
-          this.plannerEvents = this.plannerEvents.filter(e => e.id !== id)
-        }
-      } catch {
-        // silent
-      }
-    },
     plannerTypeLabel(type) {
       const map = { EXAM: 'Prüfung', ASSIGNMENT: 'Abgabe', PRESENTATION: 'Präsentation' }
       return map[type] || type
+    },
+    priorityLabel(prio) {
+      const map = { URGENT: 'Dringend', HIGH: 'Hoch', NORMAL: 'Normal' }
+      return map[(prio || '').toUpperCase()] || prio
     },
     formatPlannerDate(dateStr) {
       return new Date(dateStr + 'T00:00:00').toLocaleDateString('de-DE', {
@@ -2096,6 +1972,39 @@ export default {
         const res = await fetch('/api/documents')
         if (res.ok) this.tutorDocuments = await res.json()
       } catch { /* silent */ }
+    },
+    async uploadQuizFile(event) {
+      // Lädt ein PDF direkt aus dem Quiz-Tab hoch (in den aktuellen Chat) — kein
+      // Chatwechsel nötig. Nach dem Hochladen ist das Dokument auswählbar.
+      const file = event.target.files[0]
+      if (!file || this.quizUploading) return
+      event.target.value = ''
+      if (file.type !== 'application/pdf') {
+        this.quizUploadStatus = { type: 'error', message: 'Nur PDF-Dateien erlaubt.' }
+        return
+      }
+      this.quizUploading = true
+      this.quizUploadStatus = { type: 'info', message: `„${this.truncateName(file.name, 28)}" wird hochgeladen…` }
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('chat_id', this.chatId)
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData })
+        if (res.ok) {
+          await this.fetchTutorDocuments()
+          if (this.tutorDocuments.includes(file.name) && !this.tutorSelectedDocs.includes(file.name)) {
+            this.tutorSelectedDocs.push(file.name)
+          }
+          this.quizUploadStatus = { type: 'success', message: 'Hochgeladen — wird im Hintergrund verarbeitet (ein paar Sekunden), dann kannst du das Quiz erstellen.' }
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.quizUploadStatus = { type: 'error', message: data.detail || 'Fehler beim Hochladen.' }
+        }
+      } catch {
+        this.quizUploadStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.quizUploading = false
+      }
     },
     async generateTutorQuiz() {
       if (this.tutorSelectedDocs.length === 0 || this.tutorGenerating) return
@@ -2109,6 +2018,7 @@ export default {
             source_documents: this.tutorSelectedDocs,
             num_questions: this.tutorNumQuestions,
             course_name: this.tutorCourseName.trim() || null,
+            chat_id: this.chatId,
           })
         })
         if (res.ok) {
@@ -2129,6 +2039,16 @@ export default {
     },
     selectAnswer(questionId, answer) {
       this.tutorAnswers = { ...this.tutorAnswers, [questionId]: answer }
+    },
+    // Antwort-Buchstabe aus dem Options-Index (0→A, 1→B, …). Unabhängig davon,
+    // ob das LLM die Option mit „A) " präfixt hat — verhindert das Mehrfach-Auswählen.
+    optionLetter(i) {
+      return String.fromCharCode(65 + i)
+    },
+    // Entfernt ein evtl. vorhandenes „A) " / „A. " / „A: " Präfix, damit der
+    // Buchstabe nicht doppelt erscheint und der Text nicht abgeschnitten wird.
+    optionLabel(opt) {
+      return String(opt).replace(/^\s*[A-Da-d][).:．、]\s*/, '').trim()
     },
     async submitTutorQuiz() {
       if (!this.tutorQuiz || !this.tutorAllAnswered || this.tutorSubmitting) return
@@ -2160,11 +2080,210 @@ export default {
       this.tutorStatsLoading = true
       this.tutorView = 'stats'
       this.tutorStats = null
+      this.evaluatorAnalysis = ''
       try {
         const res = await fetch('/api/tutor/stats')
         if (res.ok) this.tutorStats = await res.json()
       } catch { /* silent */ } finally {
         this.tutorStatsLoading = false
+      }
+    },
+    async resetStats() {
+      if (!confirm('Wirklich alle Quiz-Statistiken zurücksetzen? Das kann nicht rückgängig gemacht werden.')) return
+      this.tutorStatsResetting = true
+      try {
+        const res = await fetch('/api/tutor/stats', { method: 'DELETE' })
+        if (res.ok) {
+          this.tutorStats = { total_attempts: 0, average_score: 0, weak_questions: [], strong_questions: [] }
+          this.evaluatorAnalysis = ''
+          this.profileData = null
+        }
+      } catch { /* silent */ } finally {
+        this.tutorStatsResetting = false
+      }
+    },
+    onDocSelectionChange() {
+      if (this.tutorSelectedDocs.length === 0) return
+      clearTimeout(this._moduleSuggestTimer)
+      this._moduleSuggestTimer = setTimeout(() => this.suggestQuizModule(), 500)
+    },
+    async suggestQuizModule() {
+      // Nur vorbefüllen, wenn der Nutzer noch keinen Kursnamen eingegeben hat.
+      if (this.tutorSelectedDocs.length === 0 || (this.tutorCourseName || '').trim()) return
+      try {
+        const res = await fetch('/api/curriculum/suggest-module', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documents: this.tutorSelectedDocs })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.module && !(this.tutorCourseName || '').trim()) {
+            this.tutorCourseName = data.module
+            this.moduleSuggested = true
+          }
+        }
+      } catch { /* silent */ }
+    },
+    async generateWeaknessQuiz() {
+      if (this.tutorGenerating) return
+      this.tutorGenerating = true
+      this.tutorStatus = { type: 'info', message: 'Schwächen-Quiz wird aus deinem Profil erstellt…' }
+      try {
+        const res = await fetch('/api/tutor/quiz/weakness', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ num_questions: this.tutorNumQuestions })
+        })
+        if (res.ok) {
+          this.tutorQuiz = await res.json()
+          this.tutorAnswers = {}
+          this.tutorCurrentQuestion = 0
+          this.tutorStatus = null
+          this.tutorView = 'quiz'
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.tutorStatus = { type: 'error', message: data.detail || 'Schwächen-Quiz fehlgeschlagen.' }
+        }
+      } catch {
+        this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.tutorGenerating = false
+      }
+    },
+    async fetchProfile() {
+      this.profileLoading = true
+      try {
+        const res = await fetch('/api/tutor/profile')
+        if (res.ok) this.profileData = await res.json()
+      } catch { /* silent */ } finally {
+        this.profileLoading = false
+      }
+    },
+    async fetchCurriculumStatus() {
+      try {
+        const res = await fetch('/api/curriculum/status')
+        if (res.ok) {
+          this.curriculumStatus = await res.json()
+          // Solange die Extraktion läuft, weiter pollen
+          if (this.curriculumStatus.processing) {
+            clearTimeout(this._curriculumPoll)
+            this._curriculumPoll = setTimeout(() => this.fetchCurriculumStatus(), 3000)
+          }
+        }
+      } catch { /* silent */ }
+    },
+    async uploadCurriculum(event) {
+      const file = event.target.files[0]
+      if (!file || this.curriculumUploading) return
+      event.target.value = ''
+      if (file.type !== 'application/pdf') return
+      this.curriculumUploading = true
+      const formData = new FormData()
+      formData.append('file', file)
+      try {
+        const res = await fetch('/api/curriculum/upload', { method: 'POST', body: formData })
+        if (res.ok) {
+          // Hintergrund-Extraktion läuft → Status pollen
+          this.curriculumStatus = { processing: true, modules: 0, with_prerequisites: 0 }
+          clearTimeout(this._curriculumPoll)
+          this._curriculumPoll = setTimeout(() => this.fetchCurriculumStatus(), 3000)
+        }
+      } catch { /* silent */ } finally {
+        this.curriculumUploading = false
+      }
+    },
+    async deleteCurriculum() {
+      if (!confirm('Modulhandbuch entfernen?')) return
+      try {
+        const res = await fetch('/api/curriculum', { method: 'DELETE' })
+        if (res.ok) this.curriculumStatus = { processing: false, modules: 0, with_prerequisites: 0 }
+      } catch { /* silent */ }
+    },
+    async resetProfile() {
+      if (!confirm('Wirklich ALLE gespeicherten Daten löschen? Quizze, Ergebnisse, Dokumente, ' +
+                   'Lebenslauf, Modulhandbuch, eigene Termine und Chats werden unwiderruflich entfernt.')) return
+      this.profileResetting = true
+      try {
+        const res = await fetch('/api/profile/reset', { method: 'POST' })
+        if (!res.ok) {
+          alert('Zurücksetzen fehlgeschlagen. Bitte später erneut versuchen.')
+          this.profileResetting = false
+          return
+        }
+        // localStorage leeren (Chats, Nachrichten, Lernplan, Chat-ID)
+        try {
+          const keys = []
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i)
+            if (k && (k === 'chats' || k === 'chatId' || k === 'studyPlan' || k === 'studyPlanDate' || k.startsWith('chat:'))) keys.push(k)
+          }
+          keys.forEach(k => localStorage.removeItem(k))
+        } catch { /* ignore */ }
+        // Saubere Neuinitialisierung
+        location.reload()
+      } catch {
+        alert('Backend nicht erreichbar.')
+        this.profileResetting = false
+      }
+    },
+    async fetchCvStatus() {
+      try {
+        const res = await fetch('/api/career/cv')
+        if (res.ok) this.cvStatus = await res.json()
+      } catch { /* silent */ }
+    },
+    async uploadCv(event) {
+      const file = event.target.files[0]
+      if (!file || this.cvUploading) return
+      event.target.value = ''
+      if (file.type !== 'application/pdf') { this.careerError = 'Nur PDF-Dateien erlaubt.'; return }
+      this.cvUploading = true
+      const formData = new FormData()
+      formData.append('file', file)
+      try {
+        const res = await fetch('/api/career/cv', { method: 'POST', body: formData })
+        if (res.ok) {
+          this.cvStatus = await res.json()
+          // Analyse mit CV neu berechnen
+          this.fetchCareerAnalysis()
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.careerError = data.detail || 'CV-Upload fehlgeschlagen.'
+        }
+      } catch {
+        this.careerError = 'Backend nicht erreichbar.'
+      } finally {
+        this.cvUploading = false
+      }
+    },
+    async deleteCv() {
+      if (!confirm('Lebenslauf entfernen?')) return
+      try {
+        const res = await fetch('/api/career/cv', { method: 'DELETE' })
+        if (res.ok) {
+          this.cvStatus = { has_cv: false, filename: null }
+          this.fetchCareerAnalysis()
+        }
+      } catch { /* silent */ }
+    },
+    async fetchKnowledgeGaps() {
+      // Ruft den EvaluatorAgent auf, der autonom alle Quiz-Daten sammelt und
+      // eine KI-Analyse der Wissenslücken erstellt.
+      this.evaluatorLoading = true
+      this.evaluatorAnalysis = ''
+      try {
+        const res = await fetch('/api/ai/knowledge-gaps')
+        if (res.ok) {
+          const data = await res.json()
+          this.evaluatorAnalysis = data.analysis || 'Keine Analyse verfügbar.'
+        } else {
+          this.evaluatorAnalysis = 'Die Analyse ist momentan nicht verfügbar. Bitte später erneut versuchen.'
+        }
+      } catch {
+        this.evaluatorAnalysis = 'Backend nicht erreichbar.'
+      } finally {
+        this.evaluatorLoading = false
       }
     },
     questionTextById(questionId) {
@@ -2235,7 +2354,7 @@ body {
 
 .app {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
@@ -2243,49 +2362,172 @@ body {
   transition: background 0.2s, color 0.2s;
 }
 
-/* NAV */
-.navbar {
+/* SIDEBAR */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 240px;
+  flex-shrink: 0;
+  padding: 14px 12px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  z-index: 100;
+}
+
+.sidebar-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 20px;
-  height: 52px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  z-index: 100;
+  justify-content: space-between;
+  margin-bottom: 2px;
 }
 
 .nav-logo {
   font-weight: 700;
   font-size: 17px;
   color: var(--primary);
-  margin-right: 12px;
   white-space: nowrap;
 }
 
-.nav-items {
-  display: flex;
-  gap: 2px;
-  flex: 1;
+.sidebar-section-label {
+  margin: 10px 4px 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
 }
 
-.nav-item { position: relative; }
+.sidebar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s, background 0.15s;
+}
+.sidebar-newchat { background: var(--primary); color: #fff; border: none; }
+.sidebar-newchat:hover { background: var(--primary-hover); }
+.sidebar-sync { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; border: none; }
+.sidebar-sync:hover:not(:disabled) { opacity: 0.9; }
+.sidebar-sync:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* back-up.png (schwarz) auf dem violetten Button → weiß einfärben */
+.lsf-sync-icon {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+  display: block;
+  filter: brightness(0) invert(1);
+}
+
+.lsf-sync-status {
+  font-size: 11px;
+  white-space: normal;
+  line-height: 1.3;
+}
+.lsf-sync-status.success { color: #16a34a; }
+.lsf-sync-status.error { color: #dc2626; }
+
+.nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item { position: static; }
 
 .nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
   background: none;
   border: none;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 15px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 14px;
   color: var(--text-muted);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
   white-space: nowrap;
 }
 
+/* CHAT-LISTE in der Sidebar */
+.chat-list { display: flex; flex-direction: column; gap: 2px; }
+.chat-list-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer;
+  font-size: 13px; color: var(--text-muted);
+}
+.chat-list-item:hover { background: var(--surface-hover); color: var(--text); }
+.chat-list-item.active { background: var(--primary-dim); color: var(--primary); font-weight: 600; }
+.chat-list-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.chat-list-del { opacity: 0; font-size: 12px; flex-shrink: 0; }
+.chat-list-item:hover .chat-list-del { opacity: 0.6; }
+.chat-list-del:hover { opacity: 1; color: #dc2626; }
+
+.chat-docs { margin-top: 6px; padding: 8px 10px; background: var(--surface-hover); border-radius: 8px; }
+.chat-docs-label { margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.chat-doc-item {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); padding: 2px 0;
+}
+.chat-doc-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* HAUPTSPALTE */
+.main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+
+/* Erfolg-Bubble (Upload) */
+.bubble-success { display: flex; align-items: flex-start; gap: 8px; }
+img.bubble-success-icon { width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px; }
+
 .nav-btn:hover { background: var(--surface-hover); color: var(--text); }
 .nav-btn.active { background: var(--primary-dim); color: var(--primary); }
+
+/* Eigene PNG-Icons (assets) — schwarz, daher im Dark Mode invertiert */
+.nav-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
+  opacity: 0.75;
+  transition: opacity 0.15s, filter 0.15s;
+}
+.nav-btn:hover .nav-icon-img,
+.nav-btn.active .nav-icon-img { opacity: 1; }
+.dark .nav-icon-img { filter: invert(1) brightness(1.6); }
+/* Aktives Item violett einfärben (passend zur Textfarbe) */
+.nav-btn.active .nav-icon-img {
+  filter: invert(36%) sepia(83%) saturate(2884%) hue-rotate(238deg) brightness(94%) contrast(92%);
+}
+.nav-icon-emoji { font-size: 15px; line-height: 1; }
+
+/* Generische UiIcon-Bilder — skalieren mit der Textgröße (1em) und werden im
+   Dark Mode invertiert (alle Asset-PNGs sind schwarz). Emoji-Fallback bleibt Text. */
+.ui-icon {
+  width: 1em;
+  height: 1em;
+  object-fit: contain;
+  display: inline-block;
+  vertical-align: -0.15em;
+}
+.dark .ui-icon { filter: invert(1) brightness(1.7); }
+.ui-icon-emoji { display: inline-block; line-height: 1; }
+
+/* Kontext-spezifische Größen (img.X schlägt .ui-icon per Spezifität) */
+img.welcome-icon-img { width: 1em; height: 1em; }
+img.theme-icon-img { width: 18px; height: 18px; vertical-align: -3px; }
+img.attach-icon-img { width: 18px; height: 18px; vertical-align: -4px; }
+/* Sync-Icon bleibt auf dem violetten Button immer weiß */
+img.lsf-sync-icon { filter: brightness(0) invert(1); }
+.dark img.lsf-sync-icon { filter: brightness(0) invert(1); }
 
 .theme-btn {
   background: none;
@@ -2302,14 +2544,16 @@ body {
 .theme-btn:hover { background: var(--surface-hover); }
 
 .dropdown {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
+  position: fixed;
+  left: 252px;                       /* Sidebar-Breite (240) + 12 Abstand */
+  top: 14px;
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  min-width: 200px;
+  border-radius: 12px;
+  padding: 16px;
+  min-width: 320px;
   box-shadow: var(--shadow);
   z-index: 200;
 }
@@ -2739,38 +2983,6 @@ body {
 }
 
 .upload-status--error { color: #ef4444; }
-
-/* JOB AGENT */
-.job-agent-section {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.job-agent-btn {
-  width: 100%;
-  padding: 8px 12px;
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.job-agent-btn:hover:not(:disabled) { background: var(--primary-hover); }
-.job-agent-btn:disabled { background: var(--border); cursor: default; }
-
-.job-agent-status {
-  margin: 8px 0 0;
-  font-size: 12px;
-  text-align: center;
-}
-
-.job-agent-status.success { color: #16a34a; }
-.job-agent-status.error { color: #dc2626; }
 
 /* CAREER */
 .career-section {
@@ -3547,676 +3759,6 @@ body {
 .pprio-high   { background: #fef3c7; color: #d97706; }
 .pprio-normal { background: #dcfce7; color: #16a34a; }
 
-/* FOCUS TIME */
-.focus-section {
-  margin-top: 4px;
-  padding-top: 4px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 22px;
-}
-
-.focus-settings-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0;
-  padding: 5px 6px;
-  border-radius: 999px;
-  background: var(--surface-hover);
-  border: 1px solid var(--border);
-}
-
-.focus-setting {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-}
-
-.focus-setting-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.focus-setting-input-wrap {
-  display: flex;
-  align-items: baseline;
-  gap: 3px;
-}
-
-.focus-setting-input-wrap input {
-  width: 36px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 700;
-  font-family: inherit;
-  outline: none;
-  text-align: right;
-}
-
-.focus-setting-input-wrap small {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.focus-setting-divider {
-  width: 1px;
-  height: 18px;
-  background: var(--border);
-}
-
-.focus-stage {
-  width: 100%;
-  border-radius: 24px;
-  overflow: hidden;
-  box-shadow: 0 24px 60px -20px rgba(15, 23, 42, 0.25);
-}
-
-.focus-stage--final {
-  box-shadow: 0 24px 60px -20px rgba(15, 23, 42, 0.25), inset 0 0 0 2px rgba(251,191,36,0.32);
-}
-
-.focus-scene {
-  --focus-progress: 0%;
-  --focus-ratio: 0;
-  position: relative;
-  height: 240px;
-  overflow: hidden;
-}
-
-.flight-sky {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(255,255,255,0.55), transparent 70%),
-    linear-gradient(180deg, #5b9bf0 0%, #7db8f5 32%, #a9d2f8 58%, #d9ecfc 80%, #f3f9ff 100%);
-  transition: background 1.2s ease;
-}
-
-.dark .flight-sky {
-  background:
-    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(99,102,241,0.18), transparent 65%),
-    linear-gradient(180deg, #060a16 0%, #0c1326 35%, #16203c 65%, #1d2a4a 100%);
-}
-
-.focus-stage--break .flight-sky {
-  background:
-    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(255,255,255,0.6), transparent 70%),
-    linear-gradient(180deg, #7fd1ea 0%, #a7e3ef 36%, #cdeef2 64%, #eef9f6 100%);
-}
-
-.dark .focus-stage--break .flight-sky {
-  background:
-    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(45,212,191,0.16), transparent 65%),
-    linear-gradient(180deg, #051418 0%, #08201f 40%, #0d2b28 70%, #123933 100%);
-}
-
-.flight-sun {
-  position: absolute;
-  width: 110px;
-  height: 110px;
-  right: 12%;
-  top: 10%;
-  border-radius: 999px;
-  background: radial-gradient(circle, #fffdf5 0%, #ffeec2 32%, rgba(255,221,128,0.35) 58%, transparent 72%);
-  opacity: 0.95;
-  filter: blur(0.3px);
-}
-
-.dark .flight-sun {
-  width: 86px;
-  height: 86px;
-  background: radial-gradient(circle, #f8fafc 0%, #cbd5e1 38%, rgba(148,163,184,0.18) 64%, transparent 72%);
-}
-
-.focus-stage--final .flight-sun { animation: flightFinalSun 1.4s ease-in-out infinite; }
-
-.flight-cloud {
-  position: absolute;
-  width: 220px;
-  height: 64px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.85);
-  filter: blur(0.4px);
-  box-shadow:
-    52px -20px 0 10px rgba(255,255,255,0.78),
-    100px 2px 0 0 rgba(255,255,255,0.7),
-    140px -14px 0 6px rgba(255,255,255,0.62);
-  opacity: 0.85;
-  animation: flightCloudDrift 70s linear infinite, flightCloudBob 7s ease-in-out infinite;
-}
-
-.flight-cloud--one { left: -280px; top: 14%; animation-duration: 78s, 8s; }
-.flight-cloud--two { left: 20%; top: 32%; transform: scale(0.68); animation-duration: 96s, 9s; animation-delay: -30s, -2s; opacity: 0.65; }
-.flight-cloud--three { left: 60%; top: 16%; transform: scale(0.5); animation-duration: 104s, 10s; animation-delay: -60s, -5s; opacity: 0.42; }
-
-.dark .flight-cloud {
-  background: rgba(203,213,225,0.18);
-  box-shadow:
-    52px -20px 0 10px rgba(203,213,225,0.14),
-    100px 2px 0 0 rgba(203,213,225,0.12),
-    140px -14px 0 6px rgba(203,213,225,0.1);
-}
-
-.flight-map {
-  position: absolute;
-  inset: 10% 6% 8%;
-  z-index: 2;
-  overflow: visible;
-}
-
-.flight-route-base,
-.flight-route-progress {
-  fill: none;
-  stroke-linecap: round;
-}
-
-.flight-route-base {
-  stroke: rgba(255,255,255,0.55);
-  stroke-width: 2.5;
-  stroke-dasharray: 1 11;
-}
-
-.dark .flight-route-base { stroke: rgba(226,232,240,0.28); }
-
-.flight-route-progress {
-  stroke: url(#flightRouteGradient);
-  stroke-width: 2.5;
-  stroke-dasharray: var(--flight-route-progress) 100;
-  transition: stroke-dasharray 0.9s cubic-bezier(0.22, 1, 0.36, 1);
-  filter: drop-shadow(0 0 6px rgba(56,189,248,0.55));
-}
-
-.flight-aircraft {
-  position: absolute;
-  left: var(--flight-left);
-  top: calc(54% + var(--flight-y));
-  z-index: 6;
-  width: clamp(150px, 21vw, 280px);
-  aspect-ratio: 1536 / 1024;
-  object-fit: contain;
-  display: block;
-  transform: translate(-50%, -50%) rotate(var(--flight-tilt));
-  transform-origin: 50% 55%;
-  transition: left 0.9s linear, top 0.9s linear, transform 0.9s linear;
-  animation: flightMicroTilt 4.2s ease-in-out infinite;
-  filter: drop-shadow(0 18px 22px rgba(15, 23, 42, 0.38)) blur(0.35px);
-  pointer-events: none;
-}
-
-.focus-stage--final .flight-aircraft { animation: flightFinalTilt 0.8s ease-in-out infinite; }
-
-.focus-stage--break .flight-aircraft {
-  opacity: 0.55;
-  filter: drop-shadow(0 18px 22px rgba(15, 23, 42, 0.3)) blur(0.35px) saturate(0.85);
-}
-
-.focus-route-line {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-}
-
-.focus-route-cities {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.01em;
-}
-
-.focus-route-plane {
-  display: inline-block;
-  margin: 0 6px;
-  color: var(--primary);
-  transform: rotate(20deg) translateY(-1px);
-}
-
-.focus-cycle-dots {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.focus-cycle-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--border);
-  transition: background 0.4s ease, transform 0.4s ease, box-shadow 0.4s ease;
-}
-
-.focus-cycle-dot--done {
-  background: linear-gradient(135deg, #38bdf8, #34d399);
-  box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 18%, transparent);
-}
-
-.focus-cycle-dot--active {
-  background: var(--primary);
-  transform: scale(1.35);
-  animation: focusCycleDotPulse 1.6s ease-in-out infinite;
-}
-
-.focus-timer {
-  width: min(100%, 360px);
-  padding: 28px 30px 24px;
-  border-radius: 28px;
-  background: linear-gradient(165deg, #0b1120 0%, #131b30 55%, #1c2742 100%);
-  box-shadow: 0 24px 60px -18px rgba(8, 12, 24, 0.55);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  transition: background 0.6s ease, box-shadow 0.4s ease;
-}
-
-.focus-timer--break {
-  background: linear-gradient(165deg, #07211e 0%, #0c2e2a 55%, #123b35 100%);
-}
-
-.focus-timer--final {
-  animation: focusTimerFinalPulse 1.1s ease-in-out infinite;
-}
-
-.focus-timer-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.56);
-}
-
-.focus-timer-display {
-  font-variant-numeric: tabular-nums;
-  font-size: clamp(56px, 11vw, 80px);
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #fff;
-  margin: 2px 0 6px;
-}
-
-.focus-timer-progress {
-  width: 100%;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.14);
-  overflow: hidden;
-}
-
-.focus-timer-progress-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #38bdf8, #34d399);
-  transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.focus-timer-pct {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(255,255,255,0.62);
-}
-
-.focus-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.focus-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 50px;
-  padding: 0 28px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-hover);
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
-}
-
-.focus-btn:hover:not(:disabled) { background: var(--border); transform: translateY(-1px); }
-.focus-btn:active:not(:disabled) { transform: translateY(0); }
-.focus-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
-
-.focus-btn--primary {
-  background: linear-gradient(135deg, var(--primary), #0ea5e9);
-  border-color: transparent;
-  color: #fff;
-  box-shadow: 0 16px 32px -12px color-mix(in srgb, var(--primary) 60%, transparent);
-}
-
-.focus-btn--primary:hover:not(:disabled) { filter: brightness(1.06); }
-
-.focus-btn-icon { font-size: 13px; }
-
-.focus-summary-card {
-  width: min(100%, 420px);
-  padding: 22px 24px;
-  border-radius: 22px;
-  background: var(--surface-hover);
-  border: 1px solid var(--border);
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  animation: focusSummaryIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.focus-summary-check {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #34d399, #22c55e);
-  color: #fff;
-  font-size: 16px;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.focus-summary-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.focus-summary-text {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-.focus-summary-stats {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  margin-top: 10px;
-}
-
-.focus-summary-stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.focus-summary-stat strong {
-  font-size: 19px;
-  font-weight: 700;
-  color: var(--primary);
-}
-
-.focus-summary-stat span {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.focus-motivation,
-.focus-status {
-  margin: 0;
-  font-size: 13px;
-  text-align: center;
-  color: var(--text-muted);
-}
-
-.focus-status.success { color: #16a34a; }
-.focus-status.error { color: #dc2626; }
-.focus-status.info { color: var(--text-muted); }
-
-@keyframes flightCloudDrift {
-  from { translate: -20vw 0; }
-  to { translate: 130vw 0; }
-}
-
-@keyframes flightCloudBob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
-}
-
-@keyframes flightMicroTilt {
-  0%, 100% { margin-top: -3px; }
-  50% { margin-top: 5px; }
-}
-
-@keyframes focusCycleDotPulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 40%, transparent); }
-  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 0%, transparent); }
-}
-
-@keyframes focusTimerFinalPulse {
-  0%, 100% { box-shadow: 0 24px 60px -18px rgba(8, 12, 24, 0.55), 0 0 0 3px rgba(251,191,36,0.35); }
-  50% { box-shadow: 0 24px 60px -18px rgba(8, 12, 24, 0.55), 0 0 0 7px rgba(251,191,36,0.18); }
-}
-
-@keyframes focusSummaryIn {
-  0% { opacity: 0; transform: translateY(10px) scale(0.98); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@keyframes flightFinalSun {
-  0%, 100% { opacity: 0.92; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.06); }
-}
-
-@keyframes flightFinalTilt {
-  0%, 100% { margin-top: -4px; }
-  50% { margin-top: 5px; }
-}
-
-.dropdown--focus-full {
-  position: fixed;
-  inset: 64px 18px 18px;
-  width: auto;
-  min-width: 0;
-  max-width: none;
-  padding: 0;
-  border-radius: 24px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  backdrop-filter: blur(26px);
-  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.24);
-}
-
-.dropdown--focus-full .dropdown-title,
-.dropdown--focus-full > ul {
-  display: none;
-}
-
-.dropdown--focus-full .focus-section {
-  height: 100%;
-  margin: 0;
-  padding: 28px 24px;
-  justify-content: center;
-  gap: 26px;
-  overflow-y: auto;
-}
-
-.dropdown--focus-full .focus-stage {
-  width: min(100%, 720px);
-}
-
-.dropdown--focus-full .focus-scene {
-  height: min(46vh, 420px);
-  min-height: 260px;
-}
-
-@media (max-width: 760px) {
-  .dropdown--focus-full {
-    inset: 58px 8px 8px;
-    border-radius: 18px;
-  }
-
-  .dropdown--focus-full .focus-section {
-    padding: 18px 14px;
-    gap: 18px;
-  }
-
-  .dropdown--focus-full .focus-scene {
-    height: 34vh;
-    min-height: 220px;
-  }
-
-  .focus-timer { padding: 22px 20px 18px; }
-  .focus-timer-display { font-size: clamp(46px, 14vw, 64px); }
-
-  .focus-settings-bar { flex-wrap: wrap; justify-content: center; row-gap: 6px; }
-  .focus-setting-divider { display: none; }
-
-  .focus-actions { gap: 8px; }
-  .focus-btn { padding: 0 18px; min-height: 46px; font-size: 13px; }
-}
-
-/* AI LANGUAGE TUTOR */
-.langtutor-section { display: flex; flex-direction: column; gap: 10px; }
-
-.langtutor-lang-row { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.langtutor-lang-chip {
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.langtutor-lang-chip:hover { border-color: var(--primary); color: var(--primary); }
-.langtutor-lang-chip--active { background: var(--primary); border-color: var(--primary); color: #fff; }
-
-.langtutor-progress {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  background: var(--surface-hover);
-  border-radius: 10px;
-}
-
-.langtutor-progress-badge {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--primary);
-  flex-shrink: 0;
-}
-
-.langtutor-xp-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
-
-.langtutor-xp-bar {
-  flex: 1;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--border);
-  overflow: hidden;
-}
-
-.langtutor-xp-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--primary), #f59e0b);
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.langtutor-progress-xp { font-size: 11px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
-
-.langtutor-messages {
-  max-height: 360px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-right: 2px;
-}
-
-.langtutor-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 20px 0; }
-
-.langtutor-turn { display: flex; }
-.langtutor-turn.user { justify-content: flex-end; }
-.langtutor-turn.assistant { justify-content: flex-start; }
-
-.langtutor-bubble {
-  max-width: 90%;
-  border-radius: 12px;
-  padding: 8px 12px;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.langtutor-bubble--user { background: var(--primary); color: #fff; border-bottom-right-radius: 3px; }
-.langtutor-bubble--ai { background: var(--surface-hover); color: var(--text); border-bottom-left-radius: 3px; width: 100%; }
-.langtutor-bubble--loading { color: var(--text-muted); font-style: italic; }
-
-.langtutor-reply { margin: 0; }
-
-.langtutor-block { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
-.langtutor-block-label { font-size: 11px; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 2px; }
-.langtutor-block p { margin: 0; }
-.langtutor-block--correction p { color: #dc2626; }
-.langtutor-explanation { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
-.langtutor-block--vocab ul { margin: 0; padding-left: 16px; }
-.langtutor-block--vocab li { font-size: 12px; }
-.langtutor-block--better p { color: #16a34a; }
-.langtutor-block--question { border-top-color: var(--primary); }
-.langtutor-block--question p { color: var(--primary); font-weight: 500; }
-
-.langtutor-status { font-size: 12px; margin: 0; text-align: center; }
-.langtutor-status.error { color: #dc2626; }
-
-.langtutor-input-row { display: flex; align-items: center; gap: 6px; }
-
-.langtutor-input {
-  flex: 1;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 7px 10px;
-  font-size: 13px;
-  background: var(--input-bg);
-  color: var(--text);
-  outline: none;
-}
-
-.langtutor-input:focus { border-color: var(--primary); }
-
-.langtutor-send-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  font-size: 15px;
-  cursor: pointer;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
-.langtutor-send-btn:hover:not(:disabled) { background: var(--primary-hover); }
-.langtutor-send-btn:disabled { background: var(--border); cursor: default; }
-
 /* TUTOR */
 .tutor-section {
   margin-top: 12px;
@@ -4237,10 +3779,19 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 140px;
+  max-height: 180px;
   overflow-y: auto;
   margin-bottom: 10px;
 }
+
+.tutor-doc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tutor-upload-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 7px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 12px; font-weight: 500; color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.tutor-upload-label:hover { background: var(--surface-hover); border-color: var(--primary); color: var(--primary); }
 
 .tutor-doc-item {
   display: flex;
@@ -4324,6 +3875,57 @@ body {
 }
 
 .tutor-stats-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+/* EvaluatorAgent — KI-Wissenslücken-Analyse */
+.evaluator-block { margin: 12px 0; }
+
+.evaluator-btn {
+  width: 100%;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.evaluator-btn:hover:not(:disabled) { opacity: 0.92; }
+.evaluator-btn:active:not(:disabled) { transform: scale(0.99); }
+.evaluator-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.evaluator-result {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface-hover);
+}
+.evaluator-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.evaluator-result-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.evaluator-refresh {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 3px 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.evaluator-refresh:hover { background: var(--surface); color: var(--text); }
+.evaluator-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .tutor-status { margin: 8px 0 0; font-size: 12px; text-align: center; }
 .tutor-status.success { color: #16a34a; }
@@ -4566,9 +4168,10 @@ body {
 .dark .result-wrong   { background: #2d1515; border-color: #991b1b; }
 
 .tutor-result-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
-.tutor-result-icon { font-weight: 700; flex-shrink: 0; }
+.tutor-result-icon { font-weight: 700; flex-shrink: 0; display: inline-flex; }
 .result-correct .tutor-result-icon { color: #16a34a; }
 .result-wrong   .tutor-result-icon { color: #dc2626; }
+img.tutor-result-icon-img { width: 15px; height: 15px; }
 .tutor-result-q { flex: 1; color: var(--text); line-height: 1.4; font-weight: 500; }
 
 .tutor-result-answer {
@@ -4600,4 +4203,276 @@ body {
 }
 
 .tutor-restart-btn:hover { background: var(--primary-hover); }
+
+/* ── Schwächen-Quiz + Stats-Reset ───────────────────────────────── */
+.tutor-weakness-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px 12px;
+  background: var(--surface);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s;
+}
+.tutor-weakness-btn:hover:not(:disabled) { background: var(--primary-dim); }
+.tutor-weakness-btn:disabled { opacity: 0.55; cursor: default; }
+
+.tutor-reset-btn {
+  margin-left: auto;
+  padding: 3px 9px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #dc2626;
+  cursor: pointer;
+}
+.tutor-reset-btn:hover:not(:disabled) { background: #fee2e2; }
+.tutor-reset-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Profil-Tab ─────────────────────────────────────────────────── */
+.profil-section { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
+
+.profil-overall { display: flex; align-items: center; gap: 14px; padding: 4px 2px; }
+.profil-overall-ring {
+  --p: 0;
+  position: relative;
+  width: 60px; height: 60px; border-radius: 50%;
+  flex-shrink: 0;
+  background: conic-gradient(var(--primary) calc(var(--p) * 1%), var(--border) 0);
+  display: grid; place-items: center;
+}
+.profil-overall-ring::before {
+  content: ''; position: absolute; width: 46px; height: 46px;
+  border-radius: 50%; background: var(--surface);
+}
+.profil-overall-val { position: relative; font-size: 17px; font-weight: 700; color: var(--text); }
+.profil-overall-meta { display: flex; flex-direction: column; gap: 2px; }
+.profil-overall-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.profil-overall-sub { font-size: 11px; color: var(--text-muted); }
+
+.profil-heading { font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 4px 0 0; }
+.profil-topic { display: flex; flex-direction: column; gap: 4px; }
+.profil-topic-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.profil-topic-name { font-size: 13px; color: var(--text); font-weight: 500; }
+.profil-topic-score { font-size: 12px; font-weight: 700; white-space: nowrap; }
+.profil-topic-sub { font-size: 11px; color: var(--text-muted); }
+.profil-bar { height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.profil-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s; }
+
+.plevel-stark { color: #16a34a; }
+.profil-bar-fill.plevel-stark { background: #16a34a; }
+.plevel-ok { color: #d97706; }
+.profil-bar-fill.plevel-ok { background: #f59e0b; }
+.plevel-schwach { color: #dc2626; }
+.profil-bar-fill.plevel-schwach { background: #dc2626; }
+
+.profil-weakness-btn {
+  margin-top: 6px; width: 100%;
+  padding: 9px 12px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border: none; border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: #fff;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.profil-weakness-btn:hover:not(:disabled) { opacity: 0.92; }
+.profil-weakness-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ── CV-Upload (Career) ─────────────────────────────────────────── */
+.cv-bar { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; flex-wrap: wrap; }
+.cv-upload-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; font-size: 12.5px; font-weight: 500;
+  color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.cv-upload-label:hover { background: var(--surface-hover); }
+.cv-filename {
+  font-size: 12px; color: #16a34a; max-width: 160px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cv-delete-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 11px; color: var(--text-muted); cursor: pointer; padding: 2px 7px;
+}
+.cv-delete-btn:hover { color: #dc2626; }
+.cv-hint { font-size: 11px; color: var(--text-muted); margin: 6px 0 0; line-height: 1.4; }
+
+/* ── Kalender (Tag/Woche/Monat) ──────────────────────────────────── */
+.dropdown--calendar { width: 640px; max-width: calc(100vw - 280px); }
+
+.cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cal-views { display: inline-flex; background: var(--surface-hover); border-radius: 8px; padding: 2px; }
+.cal-view-btn { border: none; background: none; padding: 5px 12px; border-radius: 6px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+.cal-view-btn.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+.cal-nav { display: inline-flex; align-items: center; gap: 4px; }
+.cal-nav-btn { width: 28px; height: 28px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; cursor: pointer; font-size: 16px; color: var(--text); line-height: 1; }
+.cal-nav-btn:hover { background: var(--surface-hover); }
+.cal-today-btn { padding: 5px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--text); }
+.cal-today-btn:hover { background: var(--surface-hover); }
+.cal-period { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 8px; text-align: center; }
+
+/* Monat */
+.cal-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.cal-weekday { font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; padding: 2px 0; }
+.cal-cell {
+  min-height: 74px; border: 1px solid var(--border); border-radius: 7px; padding: 4px;
+  cursor: pointer; display: flex; flex-direction: column; gap: 2px; overflow: hidden;
+  background: var(--surface); transition: background 0.12s;
+}
+.cal-cell:hover { background: var(--surface-hover); }
+.cal-cell--out { opacity: 0.4; }
+.cal-cell--today { border-color: var(--primary); }
+.cal-cell-num { font-size: 12px; font-weight: 600; color: var(--text); align-self: flex-end; }
+.cal-cell--today .cal-cell-num { background: var(--primary); color: #fff; border-radius: 50%; width: 18px; height: 18px; display: grid; place-items: center; }
+.cal-cell-events { display: flex; flex-direction: column; gap: 2px; }
+.cal-chip { font-size: 10px; padding: 1px 4px; border-radius: 4px; background: var(--primary-dim); color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-more { font-size: 10px; color: var(--text-muted); }
+
+/* Woche */
+.cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-week-col { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; min-height: 120px; background: var(--surface); }
+.cal-week-col--today { border-color: var(--primary); }
+.cal-week-head { padding: 5px; text-align: center; cursor: pointer; background: var(--surface-hover); }
+.cal-week-dow { display: block; font-size: 11px; color: var(--text-muted); }
+.cal-week-date { font-size: 13px; font-weight: 600; color: var(--text); }
+.cal-week-events { padding: 4px; display: flex; flex-direction: column; gap: 3px; }
+.cal-week-empty { font-size: 11px; color: var(--text-muted); text-align: center; }
+.cal-event { font-size: 10.5px; padding: 3px 5px; border-radius: 5px; background: var(--primary-dim); display: flex; flex-direction: column; }
+.cal-event-time { font-weight: 600; color: var(--primary); }
+.cal-event-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Tag */
+.cal-day { display: flex; flex-direction: column; gap: 6px; }
+.cal-day-event { display: flex; gap: 10px; border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: 8px; padding: 8px 10px; }
+.cal-day-time { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--primary); min-width: 46px; }
+.cal-day-time-end { color: var(--text-muted); font-weight: 400; }
+.cal-day-body { display: flex; flex-direction: column; gap: 3px; }
+.cal-day-top { display: flex; align-items: center; gap: 6px; }
+.cal-day-name { font-size: 13px; font-weight: 600; color: var(--text); }
+
+/* ── Career: Datenbasis ──────────────────────────────────────────── */
+.career-datasources { margin: 10px 0; padding: 10px 12px; background: var(--surface-hover); border: 1px solid var(--border); border-radius: 10px; }
+.career-ds-title { margin: 0 0 8px; font-size: 12px; font-weight: 700; color: var(--text); }
+.career-ds-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.career-ds-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 4px 9px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+.career-ds-chip.on { border-color: var(--primary); color: var(--primary); }
+.career-ds-chip.off { opacity: 0.6; }
+.career-ds-quiz { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.career-ds-quiz-label { font-size: 11px; color: var(--text-muted); }
+.career-ds-quiz-tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
+.career-ds-quiz-tag.plevel-stark { background: #dcfce7; color: #166534; }
+.career-ds-quiz-tag.plevel-ok { background: #fef9c3; color: #854d0e; }
+.career-ds-quiz-tag.plevel-schwach { background: #fee2e2; color: #991b1b; }
+.dark .career-ds-quiz-tag.plevel-stark { background: #14231a; color: #4ade80; }
+.dark .career-ds-quiz-tag.plevel-ok { background: #2a2410; color: #fbbf24; }
+.dark .career-ds-quiz-tag.plevel-schwach { background: #2d1515; color: #f87171; }
+.career-ds-hint { margin: 8px 0 0; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
+/* ── Career: Portal-Deep-Links ───────────────────────────────────── */
+.career-portals { margin: 8px 0; }
+.career-portals-label { margin: 0 0 6px; font-size: 12px; color: var(--text-muted); }
+.career-portals-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.career-portals-btns--sm { margin-top: 8px; }
+.career-portal-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 12px; border-radius: 8px;
+  background: var(--primary); color: #fff; text-decoration: none;
+  font-size: 12px; font-weight: 600; transition: opacity 0.15s;
+}
+.career-portal-btn:hover { opacity: 0.9; }
+.career-portal-btn--sm { padding: 4px 9px; font-size: 11px; background: var(--surface); color: var(--primary); border: 1px solid var(--primary); }
+
+/* ── Career: echte Stellen ───────────────────────────────────────── */
+.career-jobs { margin: 12px 0; }
+.career-jobs-title { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+.career-jobs-source { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.career-job-card { display: block; padding: 9px 12px; margin-bottom: 6px; border: 1px solid var(--border); border-radius: 9px; text-decoration: none; transition: border-color 0.15s, background 0.15s; }
+.career-job-card:hover { border-color: var(--primary); background: var(--surface-hover); }
+.career-job-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.career-job-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.career-job-salary { font-size: 11.5px; font-weight: 600; color: #16a34a; white-space: nowrap; }
+.career-job-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; display: flex; gap: 4px; flex-wrap: wrap; }
+.career-job-remote { color: var(--primary); }
+.career-jobs-empty { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 8px 0; padding: 10px 12px; background: var(--surface-hover); border-radius: 9px; }
+
+/* ── Kalender: eigene Termine + Legende + Event-Arten ────────────── */
+.cal-period-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.cal-add-btn { padding: 5px 11px; border: 1px solid var(--primary); background: var(--surface); color: var(--primary); border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.cal-add-btn:hover { background: var(--primary-dim); }
+.cal-add-form { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-hover); }
+.cal-add-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; }
+.cal-add-input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12.5px; background: var(--surface); color: var(--text); }
+.cal-add-actions { display: flex; gap: 6px; }
+.cal-add-save { flex: 1; padding: 7px; border: none; border-radius: 7px; background: var(--primary); color: #fff; font-weight: 600; font-size: 12.5px; cursor: pointer; }
+.cal-add-save:disabled { opacity: 0.6; }
+.cal-add-cancel { padding: 7px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-muted); font-size: 12.5px; cursor: pointer; }
+
+.cal-legend { display: flex; gap: 12px; margin-bottom: 8px; }
+.cal-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
+.cal-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.cal-dot--class { background: #8b5cf6; }
+.cal-dot--user { background: #0ea5e9; }
+.cal-dot--deadline { background: #ef4444; }
+
+/* Event-Farben je Art */
+.cal-chip--class { background: var(--primary-dim); color: var(--primary); }
+.cal-chip--user { background: #e0f2fe; color: #0369a1; }
+.cal-chip--deadline { background: #fee2e2; color: #b91c1c; font-weight: 600; }
+.dark .cal-chip--user { background: #0c2a3a; color: #7dd3fc; }
+.dark .cal-chip--deadline { background: #2d1515; color: #fca5a5; }
+
+.cal-event--class .cal-event-time { color: var(--primary); }
+.cal-event--user { background: #e0f2fe; }
+.cal-event--user .cal-event-time { color: #0369a1; }
+.cal-event--deadline { background: #fee2e2; }
+.cal-event--deadline .cal-event-time { color: #b91c1c; }
+.dark .cal-event--user { background: #0c2a3a; }
+.dark .cal-event--deadline { background: #2d1515; }
+
+.cal-day-event--user { border-left-color: #0ea5e9; }
+.cal-day-event--deadline { border-left-color: #ef4444; }
+.cal-day-allday { font-size: 11px; color: var(--text-muted); }
+.cal-badge-user { background: #e0f2fe; color: #0369a1; }
+.cal-day-del { margin-top: 4px; align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; padding: 3px 8px; color: #dc2626; cursor: pointer; }
+.cal-day-del:hover { background: #fee2e2; }
+
+/* ── Planner: Lernplan-Generator ─────────────────────────────────── */
+.planner-plan-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 10px 12px; margin-bottom: 10px; border: none; border-radius: 9px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.planner-plan-btn:hover:not(:disabled) { opacity: 0.92; }
+.planner-plan-btn:disabled { opacity: 0.6; cursor: default; }
+img.planner-plan-icon { filter: brightness(0) invert(1); width: 16px; height: 16px; }
+.planner-plan-result { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--surface-hover); }
+.planner-plan-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.planner-plan-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.planner-plan-date { font-size: 10.5px; color: var(--text-muted); margin-left: auto; margin-right: 8px; white-space: nowrap; }
+.planner-plan-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 13px; }
+.planner-plan-text { font-size: 12.5px; line-height: 1.55; color: var(--text); }
+.planner-deadlines-label { margin: 4px 0 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+
+/* ── Profil: Modulhandbuch ───────────────────────────────────────── */
+.curriculum-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface-hover); }
+.curriculum-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.curriculum-title { font-size: 12px; font-weight: 700; color: var(--text); }
+.curriculum-count { font-size: 11px; color: #16a34a; font-weight: 600; }
+.curriculum-row { display: flex; align-items: center; gap: 8px; }
+.curriculum-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; margin: 8px 0 0; }
+.tutor-module-hint { font-size: 11px; color: #16a34a; margin: 4px 0 0; }
+
+/* Profil-Reset */
+.profil-reset { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.profil-reset-btn { width: 100%; padding: 9px 12px; border: 1px solid #dc2626; background: var(--surface); color: #dc2626; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.profil-reset-btn:hover:not(:disabled) { background: #fee2e2; }
+.profil-reset-btn:disabled { opacity: 0.55; cursor: default; }
+.profil-reset-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; margin: 6px 0 0; }
 </style>

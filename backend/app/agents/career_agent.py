@@ -56,21 +56,25 @@ class _CareerAnalysisSchema(BaseModel):
 # ── System-Prompts ────────────────────────────────────────────────────────────
 
 _ANALYSIS_SYSTEM_PROMPT = """
-Du bist ein KI-Karriereberater, der das Notenblatt eines Studierenden analysiert.
+Du bist ein KI-Karriereberater für einen STUDIERENDEN, der NEBEN dem Studium eine
+Werkstudentenstelle (oder ein Praktikum) sucht — KEINE Vollzeit-/Senior-Stelle.
 
 Analysiere frei — kein festes Skill-Set, nur was die tatsächlichen Kurse belegen.
-Empfehle 3–5 passende Berufsfelder mit konkreten Lernpfaden.
+Empfehle 3–5 passende WERKSTUDENTEN-Stellen mit konkreten Lernpfaden.
 
 Skills (5–10 Einträge):
 - Nur Skills die wirklich durch Kurse belegt sind
 - Fehlende wichtige Skills mit score=0 als Gap markieren
 - matched_courses: exakte Kursnamen aus dem Input
 
-Rollen:
-- Realistische Job-Titel aus dem deutschen Markt
+Rollen (WICHTIG — es sind Werkstudenten-Positionen, keine Vollzeitstellen):
+- title: als Werkstudenten-Stelle formulieren, z.B. 'Werkstudent:in Data Analytics',
+  'Werkstudent:in Business Intelligence', 'Werkstudent:in Softwareentwicklung',
+  'Praktikant:in Controlling' — NICHT 'Business Analyst' oder 'IT-Consultant' als Vollzeit.
 - missing_skills: konkrete Tools/Technologien (nicht vage)
-- recommended_certifications: echte, bekannte Zertifikate
-- salary_range_eur: Format '€55.000 – €75.000 pro Jahr'
+- recommended_certifications: echte, bekannte Zertifikate (für Studierende erreichbar)
+- salary_range_eur: typische WERKSTUDENTEN-Vergütung in Deutschland, Format
+  '€15 – €20 pro Stunde' (NICHT Jahresgehalt einer Vollzeitstelle).
 - market_demand: 'Very High' | 'High' | 'Medium' | 'Low'
 """.strip()
 
@@ -194,8 +198,19 @@ def create_career_agent(db: AsyncSession):
 
 # ── Öffentliche API ───────────────────────────────────────────────────────────
 
-async def get_ai_career_analysis(courses: list[dict]) -> dict:
+async def get_ai_career_analysis(
+    courses: list[dict],
+    cv_text: str | None = None,
+    quiz_topics: list[dict] | None = None,
+) -> dict:
     """Strukturierte Karriere-Analyse via LangChain Structured Output.
+
+    Args:
+        courses: Liste der Module mit Note/ECTS.
+        cv_text: Optionaler Lebenslauf-Text (aus hochgeladenem PDF). Fließt zusätzlich
+            in die Analyse ein, um Erfahrungen/Projekte/Skills jenseits der Noten zu erfassen.
+        quiz_topics: Optionale Quiz-Beherrschung pro Thema (score 0–100). Belegt praktisch
+            nachgewiesenes Können (hoher Score = bestätigter Skill, niedriger Score = Lücke).
 
     Raises:
         RuntimeError: Bei LLM-Fehlern.
@@ -208,6 +223,26 @@ async def get_ai_career_analysis(courses: list[dict]) -> dict:
         lines.append(f"- {c.get('course_name') or 'Unbekannter Kurs'} | Note: {grade}{credit_str}")
 
     user_prompt = "Notenblatt des Studierenden:\n" + "\n".join(lines)
+
+    if quiz_topics:
+        quiz_lines = [
+            f"- {t.get('topic')}: {t.get('score')}/100 "
+            f"({t.get('correct')}/{t.get('total')} Fragen richtig)"
+            for t in quiz_topics
+        ]
+        user_prompt += (
+            "\n\nQuiz-Leistung des Studierenden (praktisch nachgewiesene Themen-Beherrschung — "
+            "hohe Werte bestätigen einen Skill, niedrige Werte sind echte Lücken; bewerte die "
+            "betroffenen Skills entsprechend höher bzw. niedriger):\n" + "\n".join(quiz_lines)
+        )
+
+    if cv_text and cv_text.strip():
+        # Auf eine sinnvolle Länge begrenzen, damit der Prompt nicht explodiert.
+        snippet = cv_text.strip()[:6000]
+        user_prompt += (
+            "\n\nLebenslauf des Studierenden (zusätzlich berücksichtigen — "
+            "Praktika, Projekte, Tools, Sprachen, Engagement):\n" + snippet
+        )
 
     llm = get_llm(temperature=0.2)
     structured_llm = llm.with_structured_output(_CareerAnalysisSchema)

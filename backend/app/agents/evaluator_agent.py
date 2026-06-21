@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm
 from app.models.attempt_answer import AttemptAnswer
+from app.models.curriculum import CurriculumModule
 from app.models.quiz import Quiz
 from app.models.quiz_attempt import QuizAttempt
 from app.models.quiz_question import QuizQuestion
@@ -33,16 +34,40 @@ Du hast Zugriff auf:
 - Schwache Fragen (unter 60 % richtig beantwortet)
 - Fragetyp-Analyse (Multiple-Choice vs. Wahr/Falsch)
 - Letzte Quiz-Versuche mit Ergebnissen
+- Das Modulhandbuch (Vorgängermodule): zu jedem Modul, auf welchen Modulen es aufbaut
 
 Vorgehen:
 1. Rufe ALLE relevanten Tools auf, um ein vollständiges Bild zu bekommen
 2. Erkenne Muster in den Fehlern (z.B. immer falsch bei Faktenfragen)
-3. Priorisiere Schwachstellen nach Häufigkeit und Wichtigkeit
-4. Gib 3–5 konkrete, handlungsorientierte Empfehlungen
+3. Für JEDES schwache Modul/Thema: rufe find_prerequisites mit dem Modul-/Quiz-Namen auf.
+   Gibt es Vorgängermodule, EMPFIEHL ausdrücklich, zuerst diese Vorgänger zu wiederholen
+   ("Lücke an der Wurzel beheben"). Gibt es kein Modulhandbuch, lass diesen Schritt aus.
+4. Priorisiere Schwachstellen nach Häufigkeit und Wichtigkeit
+5. Gib 3–5 konkrete, handlungsorientierte Empfehlungen
 
 Antworte auf Deutsch. Nutze klare Struktur mit Abschnitten und Aufzählungen.
 Sei konstruktiv und motivierend.
 """.strip()
+
+
+def _match_module(modules: list, name: str):
+    """Findet das am besten passende Curriculum-Modul zu einem (Teil-)Namen."""
+    q = (name or "").strip().lower()
+    if not q:
+        return None
+    for m in modules:
+        if q == m.name.lower():
+            return m
+    for m in modules:
+        if q in m.name.lower() or m.name.lower() in q:
+            return m
+    q_words = set(q.split())
+    best, best_overlap = None, 0
+    for m in modules:
+        overlap = len(q_words & set(m.name.lower().split()))
+        if overlap > best_overlap:
+            best, best_overlap = m, overlap
+    return best if best_overlap else None
 
 
 def create_evaluator_agent(db: AsyncSession):
@@ -197,6 +222,46 @@ def create_evaluator_agent(db: AsyncSession):
             logger.warning("Fragetyp-Analyse fehlgeschlagen: %s", exc)
             return "Fragetyp-Analyse konnte nicht durchgeführt werden."
 
+    @tool
+    async def find_prerequisites(module_name: str) -> str:
+        """Schlägt im Modulhandbuch nach, auf welchen VORGÄNGERMODULEN ein Modul aufbaut.
+        Nutze dies für jedes schwache Modul/Thema, um zu empfehlen, welche Vorgänger
+        der Studierende zuerst wiederholen sollte.
+
+        Args:
+            module_name: Name des (schwachen) Moduls oder Quiz-Themas.
+        """
+        try:
+            modules = (await db.execute(select(CurriculumModule))).scalars().all()
+        except Exception:
+            modules = []
+        if not modules:
+            return "Kein Modulhandbuch hinterlegt — Vorgängermodule sind nicht verfügbar."
+        m = _match_module(modules, module_name)
+        if m is None:
+            return f"Kein passendes Modul zu '{module_name}' im Modulhandbuch gefunden."
+        if not m.prerequisites:
+            return f"'{m.name}' hat laut Modulhandbuch keine Vorgängermodule."
+        by_name = {x.name.lower(): x for x in modules}
+        lines = []
+        for p in m.prerequisites:
+            pm = by_name.get(p.lower())
+            desc = f" — {pm.description}" if pm and pm.description else ""
+            lines.append(f"- {p}{desc}")
+        return f"'{m.name}' baut auf folgenden Vorgängermodulen auf:\n" + "\n".join(lines)
+
+    @tool
+    async def list_curriculum_modules() -> str:
+        """Listet die Module aus dem Modulhandbuch (Namen). Hilft, schwache Themen den
+        richtigen Modulnamen zuzuordnen."""
+        try:
+            modules = (await db.execute(select(CurriculumModule).order_by(CurriculumModule.name))).scalars().all()
+        except Exception:
+            modules = []
+        if not modules:
+            return "Kein Modulhandbuch hinterlegt."
+        return "Module im Modulhandbuch:\n" + "\n".join(f"- {m.name}" for m in modules)
+
     llm = get_llm(temperature=0.3)
     return create_agent(
         model=llm,
@@ -205,6 +270,8 @@ def create_evaluator_agent(db: AsyncSession):
             get_weak_questions,
             get_recent_attempts,
             get_question_type_breakdown,
+            find_prerequisites,
+            list_curriculum_modules,
         ],
         system_prompt=_SYSTEM_PROMPT,
     )

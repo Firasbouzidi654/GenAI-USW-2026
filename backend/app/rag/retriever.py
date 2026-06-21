@@ -22,34 +22,59 @@ def _format_context(documents: list[str], metadatas: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _build_where(
+    source_filter: list[str] | None,
+    chat_id: str | None,
+    user_id: str | None,
+) -> dict | None:
+    """Baut den ChromaDB-``where``-Filter.
+
+    Mehrere Bedingungen werden mit ``$and`` kombiniert (ChromaDB-Anforderung).
+    ``chat_id``/``user_id`` sorgen für die Isolation zwischen Chats und Nutzern.
+    """
+    conditions: list[dict] = []
+    if source_filter:
+        if len(source_filter) == 1:
+            conditions.append({"source": {"$eq": source_filter[0]}})
+        else:
+            conditions.append({"source": {"$in": source_filter}})
+    if chat_id is not None:
+        conditions.append({"chat_id": {"$eq": chat_id}})
+    if user_id is not None:
+        conditions.append({"user_id": {"$eq": user_id}})
+
+    if not conditions:
+        return None
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
+
+
 async def retrieve_context(
     query: str,
     source_filter: list[str] | None = None,
     n_results: int | None = None,
     threshold: float | None = 0.4,
+    chat_id: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Sucht in ChromaDB die für ``query`` relevantesten Chunks und gibt sie als Text zurück.
 
     Schritte:
       1. Query embedden (Gemini)
-      2. Top-K Chunks in ChromaDB suchen (optional gefiltert nach Dokumentnamen)
+      2. Top-K Chunks in ChromaDB suchen (gefiltert nach Dokumentnamen + chat_id/user_id)
       3. Treffer zu einem einzigen Kontext-String zusammenfügen
 
     Args:
         query: Die Suchanfrage.
         source_filter: Optionale Liste von Dateinamen (``source``-Metadatenfeld).
-            Bei einer Datei wird ``$eq``, bei mehreren ``$in`` verwendet.
-            Ohne Angabe wird über alle Dokumente gesucht.
         n_results: Anzahl zurückgegebener Chunks. Überschreibt ``settings.rag_top_k``.
-            Nützlich für Quiz-Generierung, die breiteren Dokumentkontext benötigt.
-        threshold: Cosine-Distance-Schwellenwert (0–2). Chunks mit Distanz >= threshold
-            werden verworfen. ``None`` deaktiviert die Filterung vollständig –
-            sinnvoll für Quiz-Generierung, wo alle Inhalte eines bestimmten
-            Dokuments relevant sind.
+        threshold: Cosine-Distance-Schwellenwert (0–2). ``None`` deaktiviert die Filterung.
+        chat_id: Beschränkt die Suche auf Dokumente dieses Chats (Isolation).
+        user_id: Beschränkt die Suche auf Dokumente dieses Nutzers (Multi-User).
 
     Bei jedem Fehler (kein Chroma, kein Embedding, kein Treffer) wird ein
-    leerer String zurückgegeben – die Prompt-Route fällt dann sauber auf
-    eine reine LLM-Antwort ohne RAG-Kontext zurück.
+    leerer String zurückgegeben.
     """
     if not query or not query.strip():
         return ""
@@ -62,12 +87,7 @@ async def retrieve_context(
     if not embeddings:
         return ""
 
-    where: dict | None = None
-    if source_filter:
-        if len(source_filter) == 1:
-            where = {"source": {"$eq": source_filter[0]}}
-        else:
-            where = {"source": {"$in": source_filter}}
+    where = _build_where(source_filter, chat_id, user_id)
 
     try:
         query_kwargs: dict = {

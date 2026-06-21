@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 # Der Mock muss am Verwendungsort (prompt.py) gesetzt werden, nicht in tutor_agent.py
-_MOCK_TARGET = "app.api.v1.prompt.run_tutor_agent"
+_MOCK_TARGET = "app.api.v1.prompt.run_orchestrator"
 
 
 def test_prompt_returns_event_stream(client):

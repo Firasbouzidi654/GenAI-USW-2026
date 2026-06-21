@@ -7,12 +7,34 @@ niveau und Arbeitsform. Das ist die ToS-konforme Variante, um LinkedIn & Co. zu 
 
 from __future__ import annotations
 
+import re
 from urllib.parse import quote, quote_plus
 
 # LinkedIn-Erfahrungsniveau (f_E): 1=Praktikum, 2=Berufseinsteiger, 3=Associate, 4=Berufserfahren
 _LINKEDIN_EXPERIENCE = {"internship": "1", "entry": "2", "associate": "3", "senior": "4"}
 # LinkedIn-Arbeitsform (f_WT): 1=Vor Ort, 2=Remote, 3=Hybrid
 _LINKEDIN_REMOTE = "2"
+
+# Gender-Marker (z. B. „:in", „/-in", „(m/w/d)"), die einen Suchbegriff unbrauchbar machen
+_GENDER_RE = re.compile(r"\(\s*m\s*/\s*w\s*/\s*[dx]\s*\)|[:/*]\s*in\b|/-in\b", re.IGNORECASE)
+# Vorangestelltes „Werkstudent" / „Werkstudent:in" am Anfang
+_WERKSTUDENT_RE = re.compile(r"^\s*werkstudent(?:[:/*]?-?in)?\s+", re.IGNORECASE)
+
+
+def _clean_role(title: str) -> str:
+    """Macht aus einem Rollentitel einen suchtauglichen Begriff:
+    entfernt ein vorangestelltes „Werkstudent(:in)", Gender-Marker und nimmt bei
+    Alternativen (Slash) nur die erste, primäre Rolle. So findet die Portalsuche
+    tatsächlich Treffer statt einer überspezifischen 0-Treffer-Phrase.
+    """
+    t = (title or "").strip()
+    t = _WERKSTUDENT_RE.sub("", t)
+    # Erst Gender-Marker wie „(m/w/d)" / „:in" raus (enthalten selbst Slashes) …
+    t = _GENDER_RE.sub("", t)
+    # … dann bei echten Alternativen („Business Intelligence / Data Analytics")
+    # nur die primäre Rolle nehmen.
+    t = t.split("/")[0]
+    return re.sub(r"\s{2,}", " ", t).strip(" -–·,")
 
 
 def build_job_links(
@@ -27,11 +49,12 @@ def build_job_links(
     student=True stellt jeder Suche „Werkstudent" voran, sodass nur
     Werkstudentenstellen angezeigt werden.
     """
-    kw = (keywords or "").strip()
+    kw = _clean_role(keywords)
     if not kw:
         return []
 
-    # Im Studierenden-Modus die Suche auf Werkstudent fokussieren
+    # Im Studierenden-Modus die Suche auf Werkstudent fokussieren (genau einmal,
+    # _clean_role hat ein evtl. bereits enthaltenes „Werkstudent" entfernt)
     search_kw = f"Werkstudent {kw}" if student else kw
 
     links: list[dict] = []

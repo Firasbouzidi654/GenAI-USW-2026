@@ -24,6 +24,7 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chat_id VARCHAR(64)"))
                 await conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id VARCHAR(64) DEFAULT 'local'"))
                 await conn.execute(text("ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'lsf'"))
+                await conn.execute(text("ALTER TABLE curriculum_modules ADD COLUMN IF NOT EXISTS module_type VARCHAR(32)"))
     except Exception:
         pass
 

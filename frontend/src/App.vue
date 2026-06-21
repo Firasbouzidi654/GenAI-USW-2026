@@ -13,7 +13,10 @@
       <button
         @click.stop="newChat"
         class="sidebar-btn sidebar-newchat"
-        title="Neuen Chat starten (eigene Dokumente, getrennt vom bisherigen Verlauf)"
+        :disabled="!canStartNewChat"
+        :title="canStartNewChat
+          ? 'Neuen Chat starten (eigene Dokumente, getrennt vom bisherigen Verlauf)'
+          : 'Stelle zuerst eine Frage im aktuellen Chat, bevor du einen neuen startest'"
       >
         ＋ Neuer Chat
       </button>
@@ -101,7 +104,7 @@
                     </span>
                   </div>
                   <div v-if="careerAnalysis.data_sources.quiz_topics.length" class="career-ds-quiz">
-                    <span class="career-ds-quiz-label">Quiz-bestätigte Themen:</span>
+                    <span class="career-ds-quiz-label">Quiz-bestätigte Stärken (≥ 90 %):</span>
                     <span
                       v-for="t in careerAnalysis.data_sources.quiz_topics"
                       :key="t.topic"
@@ -110,8 +113,16 @@
                     >{{ t.topic }} · {{ t.score }}%</span>
                   </div>
                   <p v-else class="career-ds-hint">
-                    Noch keine Quiz-Daten — mach Quizze im Quiz-Tab, dann fließen deine nachgewiesenen Stärken hier mit ein.
+                    Noch keine Quiz-bestätigte Stärke — erst ab <strong>90 %</strong> zählt ein Thema als belegte Stärke und fließt in die Jobsuche ein.
                   </p>
+                  <div v-if="careerAnalysis.data_sources.job_keywords && careerAnalysis.data_sources.job_keywords.length" class="career-ds-quiz">
+                    <span class="career-ds-quiz-label">Jobsuche basiert auf:</span>
+                    <span
+                      v-for="kw in careerAnalysis.data_sources.job_keywords"
+                      :key="kw"
+                      class="career-ds-quiz-tag career-ds-kw"
+                    >{{ kw }}</span>
+                  </div>
                 </div>
 
                 <p v-if="careerAnalysis.summary" class="career-summary-text">{{ careerAnalysis.summary }}</p>
@@ -745,6 +756,30 @@
                     <div v-if="ans.explanation" class="tutor-result-explanation"><UiIcon name="lightbulb" fallback="💡" /> {{ ans.explanation }}</div>
                   </div>
                 </div>
+
+                <!-- NACHBESPRECHUNG bei < 90 % -->
+                <div v-if="tutorResults.percentage < 90" class="quiz-review">
+                  <div v-if="tutorQuiz && tutorQuiz.source_documents && tutorQuiz.source_documents.length" class="quiz-review-material">
+                    <p class="quiz-review-material-label"><UiIcon name="book" fallback="📚" /> Empfohlenes Material zum Wiederholen</p>
+                    <div v-for="d in tutorQuiz.source_documents" :key="d" class="quiz-review-doc" :title="'Öffnen: ' + d" @click.stop="openDocument(d)">
+                      <UiIcon name="clip" fallback="📎" /> <span>{{ truncateName(d, 30) }}</span>
+                      <span class="quiz-review-doc-open">ansehen</span>
+                    </div>
+                    <p v-if="tutorQuiz.course_name" class="quiz-review-module">Modul: {{ tutorQuiz.course_name }}</p>
+                  </div>
+
+                  <button
+                    v-if="!quizReview"
+                    @click.stop="reviewQuiz"
+                    :disabled="quizReviewLoading"
+                    class="quiz-review-btn"
+                  >
+                    {{ quizReviewLoading ? 'Tutor bereitet die Nachbesprechung vor …' : 'Ergebnisse mit dem Tutor durchgehen' }}
+                  </button>
+
+                  <div v-if="quizReview" class="quiz-review-text markdown" v-html="renderMarkdown(quizReview)"></div>
+                </div>
+
                 <button @click.stop="resetTutorQuiz" class="tutor-restart-btn">Neues Quiz starten</button>
               </div>
 
@@ -769,7 +804,7 @@
 
       <div v-if="tutorDocuments.length > 0" class="chat-docs">
         <p class="chat-docs-label">Hochgeladene Dokumente</p>
-        <div v-for="d in tutorDocuments" :key="d" class="chat-doc-item" :title="d">
+        <div v-for="d in tutorDocuments" :key="d" class="chat-doc-item chat-doc-item--clickable" :title="'Öffnen: ' + d" @click.stop="openDocument(d)">
           <UiIcon name="clip" fallback="📎" /> <span>{{ truncateName(d, 22) }}</span>
         </div>
       </div>
@@ -905,6 +940,20 @@
     </div>
     </div><!-- /main-col -->
 
+    <!-- PDF-POPUP -->
+    <div v-if="pdfViewer" class="pdf-modal-overlay" @click.self="closePdfViewer">
+      <div class="pdf-modal">
+        <div class="pdf-modal-header">
+          <span class="pdf-modal-title" :title="pdfViewer.name"><UiIcon name="clip" fallback="📄" /> {{ pdfViewer.name }}</span>
+          <div class="pdf-modal-actions">
+            <a :href="pdfViewer.url" target="_blank" rel="noopener" class="pdf-modal-link" title="In neuem Tab öffnen">↗</a>
+            <button class="pdf-modal-close" @click.stop="closePdfViewer" title="Schließen">✕</button>
+          </div>
+        </div>
+        <iframe :src="pdfViewer.url" class="pdf-modal-frame" title="PDF-Vorschau"></iframe>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -1004,6 +1053,9 @@ export default {
       tutorCurrentQuestion: 0,
       tutorAnswers: {},
       tutorResults: null,
+      quizReview: '',
+      quizReviewLoading: false,
+      pdfViewer: null,   // { name, url } — angezeigtes Dokument im Popup
       tutorStats: null,
       tutorStatsLoading: false,
       evaluatorAnalysis: '',
@@ -1073,6 +1125,10 @@ export default {
     }
   },
   computed: {
+    canStartNewChat() {
+      // Erst nachdem im aktuellen Chat etwas gefragt wurde, darf ein neuer starten.
+      return this.messages.some(m => m.role === 'user')
+    },
     currentDateTimeStr() {
       const d = this.currentTime
       const days = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
@@ -1304,12 +1360,25 @@ export default {
         localStorage.setItem('chat:' + this.chatId + ':messages', JSON.stringify(this.messages))
       } catch { /* localStorage voll — ignorieren */ }
     },
-    updateChatTitle(text) {
+    async maybeNameChat(text) {
+      // Benennt den Chat nur beim ERSTEN Beitrag. Setzt sofort einen provisorischen
+      // Titel (gekürzte Frage) und ersetzt ihn dann durch einen KI-Themen-Titel.
       const c = this.chats.find(c => c.id === this.chatId)
-      if (c && (!c.title || c.title === 'Neuer Chat')) {
-        c.title = text.trim().slice(0, 40) || 'Neuer Chat'
-        this.persistChats()
-      }
+      if (!c || (c.title && c.title !== 'Neuer Chat')) return
+      c.title = (text || '').trim().slice(0, 40) || 'Neuer Chat'
+      this.persistChats()
+      try {
+        const res = await fetch('/api/chat/title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: text })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const t = (data.title || '').trim()
+          if (t) { c.title = t.slice(0, 60); this.persistChats() }
+        }
+      } catch { /* provisorischer Titel bleibt bestehen */ }
     },
     truncateName(name, max = 24) {
       if (!name) return ''
@@ -1338,6 +1407,11 @@ export default {
       this.loadMessages()
     },
     newChat() {
+      // Erst einen neuen Chat zulassen, wenn im aktuellen schon etwas gefragt wurde.
+      if (!this.canStartNewChat) return
+      this._createChat()
+    },
+    _createChat() {
       // Startet einen frischen Chat: neue chat_id, eigener Verlauf + Dokumente.
       const id = this._genChatId()
       this.chats.unshift({ id, title: 'Neuer Chat', createdAt: Date.now() })
@@ -1369,7 +1443,7 @@ export default {
       this.persistChats()
       if (id === this.chatId) {
         if (this.chats.length === 0) {
-          this.newChat()
+          this._createChat()
         } else {
           this.chatId = this.chats[0].id
           localStorage.setItem('chatId', this.chatId)
@@ -1601,7 +1675,7 @@ export default {
       this.messages.push({ role: 'user', content: userPrompt })
       this.messages.push({ role: 'assistant', content: '' })
       this.loading = true
-      this.updateChatTitle(userPrompt)
+      this.maybeNameChat(userPrompt)
 
       await this.$nextTick()
       this.scrollToBottom()
@@ -2065,6 +2139,7 @@ export default {
         })
         if (res.ok) {
           this.tutorResults = await res.json()
+          this.quizReview = ''
           this.tutorView = 'results'
         } else {
           const data = await res.json().catch(() => ({}))
@@ -2074,6 +2149,28 @@ export default {
         this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
       } finally {
         this.tutorSubmitting = false
+      }
+    },
+    async reviewQuiz() {
+      if (!this.tutorQuiz || !this.tutorResults || this.quizReviewLoading) return
+      this.quizReviewLoading = true
+      try {
+        const res = await fetch(`/api/tutor/quiz/${this.tutorQuiz.id}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ attempt_id: this.tutorResults.attempt_id })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          this.quizReview = data.review || ''
+        } else {
+          const data = await res.json().catch(() => ({}))
+          this.tutorStatus = { type: 'error', message: data.detail || 'Nachbesprechung fehlgeschlagen.' }
+        }
+      } catch {
+        this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      } finally {
+        this.quizReviewLoading = false
       }
     },
     async fetchTutorStats() {
@@ -2291,10 +2388,24 @@ export default {
       const q = this.tutorQuiz.questions.find(q => q.id === questionId)
       return q ? q.question_text : ''
     },
+    openDocument(name, url = null) {
+      // Zeigt eine PDF im App-Popup. url optional (z.B. später für Moodle-Dokumente);
+      // sonst wird die lokal hochgeladene Datei ausgeliefert.
+      if (!name) return
+      this.pdfViewer = {
+        name,
+        url: url || ('/api/documents/file?name=' + encodeURIComponent(name)),
+      }
+    },
+    closePdfViewer() {
+      this.pdfViewer = null
+    },
     resetTutorQuiz() {
       this.tutorView = 'setup'
       this.tutorQuiz = null
       this.tutorResults = null
+      this.quizReview = ''
+      this.quizReviewLoading = false
       this.tutorAnswers = {}
       this.tutorCurrentQuestion = 0
       this.tutorStatus = null
@@ -2413,7 +2524,8 @@ body {
   transition: opacity 0.15s, background 0.15s;
 }
 .sidebar-newchat { background: var(--primary); color: #fff; border: none; }
-.sidebar-newchat:hover { background: var(--primary-hover); }
+.sidebar-newchat:hover:not(:disabled) { background: var(--primary-hover); }
+.sidebar-newchat:disabled { opacity: 0.45; cursor: not-allowed; }
 .sidebar-sync { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; border: none; }
 .sidebar-sync:hover:not(:disabled) { opacity: 0.9; }
 .sidebar-sync:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -4147,6 +4259,118 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
 .tutor-score-fraction { font-size: 24px; font-weight: 700; color: var(--text); }
 .tutor-score-pct { font-size: 16px; font-weight: 600; color: var(--text-muted); }
 
+/* Nachbesprechung (< 90 %) */
+.quiz-review {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.quiz-review-material {
+  background: var(--primary-dim);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.quiz-review-material-label { font-size: 13px; font-weight: 700; color: var(--text); margin: 0 0 8px; }
+.quiz-review-doc {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text); padding: 3px 0;
+}
+.quiz-review-module { font-size: 12px; color: var(--text-muted); margin: 6px 0 0; }
+.quiz-review-btn {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.quiz-review-btn:hover:not(:disabled) { background: var(--primary-hover); }
+.quiz-review-btn:disabled { opacity: 0.6; cursor: progress; }
+.quiz-review-text {
+  margin-top: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.quiz-review-doc { cursor: pointer; }
+.quiz-review-doc:hover { text-decoration: underline; }
+.quiz-review-doc-open {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+}
+.chat-doc-item--clickable { cursor: pointer; }
+.chat-doc-item--clickable:hover { color: var(--primary); text-decoration: underline; }
+
+/* PDF-Popup */
+.pdf-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.pdf-modal {
+  width: min(900px, 92vw);
+  height: min(90vh, 1000px);
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pdf-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.pdf-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdf-modal-actions { display: flex; align-items: center; gap: 6px; }
+.pdf-modal-link, .pdf-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.pdf-modal-link:hover, .pdf-modal-close:hover { background: var(--surface-hover); }
+.pdf-modal-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #f3f4f6;
+}
+
 .tutor-result-list {
   display: flex;
   flex-direction: column;
@@ -4371,6 +4595,7 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .career-ds-quiz { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .career-ds-quiz-label { font-size: 11px; color: var(--text-muted); }
 .career-ds-quiz-tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
+.career-ds-kw { background: var(--primary-dim); color: var(--primary); }
 .career-ds-quiz-tag.plevel-stark { background: #dcfce7; color: #166534; }
 .career-ds-quiz-tag.plevel-ok { background: #fef9c3; color: #854d0e; }
 .career-ds-quiz-tag.plevel-schwach { background: #fee2e2; color: #991b1b; }

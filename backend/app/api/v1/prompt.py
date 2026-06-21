@@ -9,9 +9,11 @@ import json
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.base import get_llm
 from app.agents.orchestrator import run_orchestrator
 from app.core.database import get_db
 from app.models.chat import ChatMessage
@@ -23,6 +25,49 @@ class PromptRequest(BaseModel):
     prompt: str
     chat_id: str | None = None
     user_id: str = "local"
+
+
+class TitleRequest(BaseModel):
+    question: str
+
+
+class TitleResponse(BaseModel):
+    title: str
+
+
+_TITLE_SYSTEM = (
+    "Du formulierst aus der ersten Nutzerfrage eines Chats einen sehr kurzen, "
+    "THEMATISCHEN Titel (höchstens 5 Wörter). Beschreibe das Thema/Anliegen, "
+    "wiederhole nicht die ganze Frage und nutze keine Anführungszeichen oder "
+    "Satzzeichen am Ende. Antworte AUSSCHLIESSLICH mit dem Titel."
+)
+
+
+@router.post("/chat/title", response_model=TitleResponse)
+async def chat_title(body: TitleRequest):
+    """Analysiert die erste Frage eines Chats und gibt einen kurzen Themen-Titel zurück."""
+    q = (body.question or "").strip()
+    if not q:
+        return TitleResponse(title="Neuer Chat")
+    fallback = q[:40]
+    try:
+        llm = get_llm(temperature=0.0)
+        resp = await llm.ainvoke([
+            SystemMessage(content=_TITLE_SYSTEM),
+            HumanMessage(content=q[:2000]),
+        ])
+        content = (
+            resp.content if isinstance(resp.content, str)
+            else " ".join(p.get("text", "") for p in resp.content if isinstance(p, dict))
+        )
+        title = content.strip().split("\n")[0].strip().strip("\"'")
+        # Mögliches „Titel:"-Präfix entfernen
+        if ":" in title[:8].lower() and title.lower().startswith("titel"):
+            title = title.split(":", 1)[1].strip()
+        title = title[:60].strip(" .\"'")
+        return TitleResponse(title=title or fallback)
+    except Exception:
+        return TitleResponse(title=fallback)
 
 
 @router.post("/prompt")

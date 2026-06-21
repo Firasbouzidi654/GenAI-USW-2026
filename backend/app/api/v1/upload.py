@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +55,29 @@ async def upload_pdf(
     background_tasks.add_task(process_document_sync, str(dest), chat_id, user_id)
 
     return {"status": "ok", "filename": filename}
+
+
+@router.get("/documents/file")
+async def get_document_file(name: str = Query(...)):
+    """Liefert eine hochgeladene PDF inline aus, damit sie in der App (Popup) angezeigt
+    werden kann. Sucht die Datei in den Upload-Ordnern (global oder chat-spezifisch).
+    """
+    safe = Path(name).name  # Path-Traversal verhindern: nur den Dateinamen verwenden
+    if not safe or not safe.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Ungültiger Dateiname.")
+    if not UPLOAD_DIR.exists():
+        raise HTTPException(status_code=404, detail="Dokument nicht gefunden.")
+    matches = [p for p in UPLOAD_DIR.rglob(safe) if p.is_file()]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Dokument nicht gefunden.")
+    # Neueste Version nehmen, falls mehrfach hochgeladen
+    path = max(matches, key=lambda p: p.stat().st_mtime)
+    return FileResponse(
+        str(path),
+        media_type="application/pdf",
+        filename=safe,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/documents", response_model=list[str])

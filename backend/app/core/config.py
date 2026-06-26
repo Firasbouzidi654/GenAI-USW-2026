@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Moodle Web Services (HTW). Token im Moodle unter Einstellungen → Sicherheitsschlüssel erstellen.
     moodle_url: str = "https://moodle.htw-berlin.de"
     moodle_token: str = ""
+    moodle_user_id: str = ""
     # Stellensuche: Adzuna (kostenloser Key auf developer.adzuna.com) für echte Suche + Gehalt.
     # Ohne Key fällt der Job-Service auf Arbeitnow (frei, ohne Key) zurück.
     adzuna_app_id: str = ""

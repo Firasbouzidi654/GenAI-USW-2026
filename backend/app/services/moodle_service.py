@@ -12,8 +12,11 @@ MOODLE_TOKEN in backend/.env hinterlegen.
 from __future__ import annotations
 
 import io
+import json
 import logging
+import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import httpx
 
@@ -76,13 +79,198 @@ async def get_site_info() -> dict:
     return await _call("core_webservice_get_site_info")
 
 
-async def get_courses() -> list[dict]:
-    """Belegte Kurse des Token-Nutzers, sortiert nach Semester (neueste zuerst)."""
+async def get_moodle_user_id() -> int:
+    if settings.moodle_user_id:
+        try:
+            return int(settings.moodle_user_id)
+        except ValueError as exc:
+            raise MoodleError("MOODLE_USER_ID muss eine Zahl sein.") from exc
     info = await get_site_info()
     user_id = info.get("userid")
     if not user_id:
         raise MoodleError("Konnte die Moodle-User-ID nicht ermitteln.")
+    return int(user_id)
 
+
+async def get_moodle_course_content(course_id: str) -> dict | list:
+    """core_course_get_contents: liefert Abschnitte und Module eines Moodle-Kurses."""
+    course_id = str(course_id).strip()
+    if not course_id:
+        raise MoodleError("Keine Moodle-Course-ID angegeben.")
+    if not settings.moodle_token:
+        raise MoodleError("Kein Moodle-Token konfiguriert (MOODLE_TOKEN in backend/.env).")
+
+    url = f"{settings.moodle_url.rstrip('/')}/webservice/rest/server.php"
+    params = {
+        "wstoken": settings.moodle_token,
+        "wsfunction": "core_course_get_contents",
+        "moodlewsrestformat": "json",
+        "courseid": course_id,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+    except httpx.HTTPError as exc:
+        raise MoodleError(f"Moodle nicht erreichbar: {exc}") from exc
+    except ValueError as exc:
+        raise MoodleError("Moodle hat keine gueltige JSON-Antwort geliefert.") from exc
+
+    if isinstance(payload, dict) and payload.get("exception"):
+        raise MoodleError(payload.get("message") or payload.get("errorcode") or "Moodle-Fehler")
+    return payload
+
+
+def _timestamp_to_iso(value) -> str | None:
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _extract_due_date(module: dict) -> str | None:
+    for key in ("duedate", "due_date", "timedue", "deadline"):
+        due = _timestamp_to_iso(module.get(key))
+        if due:
+            return due
+
+    for entry in module.get("dates", []) or []:
+        label = str(entry.get("label") or entry.get("name") or "").lower()
+        if any(word in label for word in ("due", "abgabe", "fällig", "faellig", "deadline")):
+            due = _timestamp_to_iso(entry.get("timestamp"))
+            if due:
+                return due
+
+    customdata = module.get("customdata")
+    if isinstance(customdata, str) and customdata.strip():
+        try:
+            parsed = json.loads(customdata)
+        except ValueError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            for key in ("duedate", "due_date", "timedue", "deadline"):
+                due = _timestamp_to_iso(parsed.get(key))
+                if due:
+                    return due
+    return None
+
+
+def _item_type(module: dict, content: dict | None = None) -> str:
+    modname = module.get("modname") or ""
+    if modname == "assign":
+        return "assignment"
+    if modname == "url":
+        return "url"
+    if content and content.get("type") == "file":
+        return "file"
+    return modname or "activity"
+
+
+def _module_url(module: dict, content: dict | None = None) -> str | None:
+    if content and content.get("fileurl"):
+        return content.get("fileurl")
+    return module.get("url")
+
+
+def add_token_to_url(url: str, token: str) -> str:
+    """Append Moodle's file token to a pluginfile URL."""
+    if not url or not token:
+        return url
+    separator = "&" if "?" in url else "?"
+    if url.endswith("?") or url.endswith("&"):
+        separator = ""
+    return f"{url}{separator}token={quote(token, safe='')}"
+
+
+def _overview_item(module: dict, content: dict | None = None) -> dict:
+    item = {
+        "name": module.get("name") or (content or {}).get("filename") or "Untitled",
+        "type": _item_type(module, content),
+        "modname": module.get("modname") or "",
+    }
+    url = _module_url(module, content)
+    if url:
+        item["url" if item["type"] != "file" else "fileurl"] = url
+        if item["type"] == "file":
+            item["open_url"] = add_token_to_url(url, settings.moodle_token)
+    if content:
+        for key in ("filename", "mimetype", "filesize"):
+            if content.get(key) is not None:
+                item[key] = content.get(key)
+    due_date = _extract_due_date(module)
+    if due_date:
+        item["due_date"] = due_date
+    return item
+
+
+async def get_moodle_course_overview(course_id: str) -> list[dict]:
+    """Vereinfacht core_course_get_contents zu Sections mit Dateien, Links und Aufgaben."""
+    raw = await get_moodle_course_content(course_id)
+    sections: list[dict] = []
+    for section in raw if isinstance(raw, list) else []:
+        items: list[dict] = []
+        for module in section.get("modules", []) or []:
+            contents = module.get("contents", []) or []
+            file_contents = [c for c in contents if c.get("type") == "file"]
+            if file_contents:
+                items.extend(_overview_item(module, content) for content in file_contents)
+            else:
+                items.append(_overview_item(module))
+        sections.append({
+            "section_name": section.get("name") or section.get("summary") or "Untitled section",
+            "items": items,
+        })
+    return sections
+
+
+def _clean_text(value) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    text = re.sub(r"<[^>]+>", "", text)
+    return text.strip()
+
+
+def _grade_item(raw: dict) -> dict | None:
+    name = _clean_text(raw.get("itemname") or raw.get("name") or raw.get("itemmodule"))
+    if not name:
+        return None
+    return {
+        "name": name,
+        "type": _clean_text(raw.get("itemmodule") or raw.get("itemtype") or raw.get("type")),
+        "grade": _clean_text(raw.get("gradeformatted") or raw.get("graderaw") or raw.get("grade")),
+        "max_grade": _clean_text(raw.get("grademaxformatted") or raw.get("grademax") or raw.get("max_grade")),
+        "percentage": _clean_text(raw.get("percentageformatted") or raw.get("percentage")),
+        "feedback": _clean_text(raw.get("feedback") or raw.get("feedbackformatted")),
+    }
+
+
+async def get_moodle_course_grades(course_id: str) -> dict:
+    """gradereport_user_get_grade_items: vereinfachte Noten fuer einen Moodle-Kurs."""
+    course_id = str(course_id).strip()
+    if not course_id:
+        raise MoodleError("Keine Moodle-Course-ID angegeben.")
+    user_id = await get_moodle_user_id()
+    raw = await _call("gradereport_user_get_grade_items", courseid=course_id, userid=user_id)
+
+    grades: list[dict] = []
+    usergrades = raw.get("usergrades", []) if isinstance(raw, dict) else []
+    for usergrade in usergrades if isinstance(usergrades, list) else []:
+        for item in usergrade.get("gradeitems", []) or []:
+            parsed = _grade_item(item)
+            if parsed:
+                grades.append(parsed)
+
+    return {"course_id": int(course_id) if course_id.isdigit() else course_id, "grades": grades}
+
+
+async def get_moodle_courses() -> list[dict]:
+    """Belegte Moodle-Kurse des konfigurierten Nutzers."""
+    user_id = await get_moodle_user_id()
     raw = await _call("core_enrol_get_users_courses", userid=user_id)
     courses = []
     for c in raw if isinstance(raw, list) else []:
@@ -91,11 +279,17 @@ async def get_courses() -> list[dict]:
             "id": c.get("id"),
             "shortname": c.get("shortname") or "",
             "fullname": c.get("fullname") or c.get("displayname") or "",
+            "visible": bool(c.get("visible", True)),
             "semester": _semester_from_timestamp(start),
             "startdate": start or 0,
         })
     courses.sort(key=lambda c: c["startdate"], reverse=True)
     return courses
+
+
+async def get_courses() -> list[dict]:
+    """Backward-compatible alias for existing Moodle integrations."""
+    return await get_moodle_courses()
 
 
 async def get_course_files(course_id: int) -> list[dict]:

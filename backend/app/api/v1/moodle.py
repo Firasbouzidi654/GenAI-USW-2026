@@ -12,6 +12,7 @@ class MoodleCourseOut(BaseModel):
     id: int
     fullname: str
     shortname: str
+    visible: bool = True
     semester: str
 
 
@@ -27,7 +28,40 @@ async def moodle_courses():
     if not moodle_service.is_configured():
         raise HTTPException(status_code=503, detail="Kein Moodle-Token konfiguriert (MOODLE_TOKEN).")
     try:
-        return await moodle_service.get_courses()
+        return await moodle_service.get_moodle_courses()
+    except moodle_service.MoodleError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/course/{course_id}/content")
+async def moodle_course_content(course_id: str):
+    """Test-Endpunkt fuer core_course_get_contents."""
+    if not moodle_service.is_configured():
+        raise HTTPException(status_code=503, detail="Kein Moodle-Token konfiguriert (MOODLE_TOKEN).")
+    try:
+        return await moodle_service.get_moodle_course_content(course_id)
+    except moodle_service.MoodleError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/course/{course_id}/overview")
+async def moodle_course_overview(course_id: str):
+    """Vereinfachte Kursuebersicht fuer das Frontend."""
+    if not moodle_service.is_configured():
+        raise HTTPException(status_code=503, detail="Kein Moodle-Token konfiguriert (MOODLE_TOKEN).")
+    try:
+        return await moodle_service.get_moodle_course_overview(course_id)
+    except moodle_service.MoodleError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/course/{course_id}/grades")
+async def moodle_course_grades(course_id: str):
+    """Vereinfachte Moodle-Noten fuer einen Kurs."""
+    if not moodle_service.is_configured():
+        raise HTTPException(status_code=503, detail="Kein Moodle-Token konfiguriert (MOODLE_TOKEN).")
+    try:
+        return await moodle_service.get_moodle_course_grades(course_id)
     except moodle_service.MoodleError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

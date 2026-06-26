@@ -32,13 +32,13 @@
       <div class="nav-items">
         <div v-for="item in navItems" :key="item.id" class="nav-item">
           <button
-            @click="togglePanel(item.id)"
-            :class="['nav-btn', { active: activePanel === item.id }]"
+            @click="item.id === 'moodle' ? openMoodlePage() : togglePanel(item.id)"
+            :class="['nav-btn', { active: activePanel === item.id || (item.id === 'moodle' && mainView === 'moodle') }]"
           >
             <UiIcon :name="item.iconName" :fallback="item.icon" cls="nav-icon-img" />
             {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--calendar': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'career' || item.id === 'profil' }]">
+          <div v-if="activePanel === item.id && item.id !== 'moodle'" :class="['dropdown', { 'dropdown--calendar': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'career' || item.id === 'profil' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -777,8 +777,127 @@
 
     <!-- HAUPTSPALTE: Chat + Eingabe -->
     <div class="main-col">
+    <section v-if="mainView === 'moodle'" class="moodle-overview moodle-overview--page" @click.stop>
+      <div class="moodle-overview-header">
+        <div>
+          <h3>Moodle Course Overview</h3>
+          <p>Sections, files, links and assignments from Moodle.</p>
+        </div>
+        <span class="moodle-overview-tag">HTW Moodle</span>
+      </div>
+
+      <div class="moodle-course-picker">
+        <div class="moodle-course-picker-head">
+          <span>Courses</span>
+          <button class="moodle-refresh-btn" type="button" :disabled="moodleCoursesLoading" @click="loadMoodleCourses(true)">
+            {{ moodleCoursesLoading ? 'Loading...' : 'Refresh' }}
+          </button>
+        </div>
+        <p v-if="moodleCoursesError" class="moodle-overview-error">{{ moodleCoursesError }}</p>
+        <p v-else-if="moodleCoursesLoading" class="moodle-overview-empty">Loading Moodle courses...</p>
+        <p v-else-if="moodleCoursesLoaded && moodleCourses.length === 0" class="moodle-overview-empty">No courses found.</p>
+        <template v-if="moodleCourses.length">
+          <div class="moodle-filter-tabs">
+            <button
+              v-for="filter in moodleSemesterFilters"
+              :key="filter.value"
+              type="button"
+              :class="{ active: moodleSemesterFilter === filter.value }"
+              @click="moodleSemesterFilter = filter.value"
+            >{{ filter.label }}</button>
+          </div>
+          <input
+            v-model.trim="moodleCourseSearch"
+            class="moodle-course-search"
+            type="search"
+            placeholder="Search course..."
+          />
+        </template>
+        <p v-if="moodleCourses.length && filteredMoodleCourses.length === 0" class="moodle-overview-empty">{{ moodleEmptyMessage }}</p>
+        <div v-if="filteredMoodleCourses.length" class="moodle-course-grid">
+          <button
+            v-for="course in filteredMoodleCourses"
+            :key="course.id"
+            type="button"
+            :class="['moodle-course-card', { active: selectedMoodleCourse && selectedMoodleCourse.id === course.id }]"
+            @click="selectMoodleCourse(course)"
+          >
+            <span class="moodle-course-title"><UiIcon name="book" fallback="📚" /> {{ course.fullname }}</span>
+            <span class="moodle-course-short">{{ course.shortname || 'No shortname' }}</span>
+            <span class="moodle-course-id">Course ID: {{ course.id }}</span>
+            <span class="moodle-course-semester">{{ moodleCourseSemesterLabel(course) }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="selectedMoodleCourse" class="moodle-selected">
+        <span class="moodle-selected-label">Selected course</span>
+        <strong>{{ selectedMoodleCourse.fullname }}</strong>
+        <span>{{ selectedMoodleCourse.shortname }} · Course ID: {{ selectedMoodleCourse.id }}</span>
+      </div>
+
+      <div v-if="selectedMoodleCourse" class="moodle-tabs">
+        <button type="button" :class="{ active: moodleActiveTab === 'materials' }" @click="moodleActiveTab = 'materials'">Course Materials</button>
+        <button type="button" :class="{ active: moodleActiveTab === 'grades' }" @click="moodleActiveTab = 'grades'">Grades / Notes</button>
+      </div>
+
+      <section v-if="selectedMoodleCourse && moodleActiveTab === 'materials'" class="moodle-tab-panel">
+        <p v-if="moodleError" class="moodle-overview-error">{{ moodleError }}</p>
+        <p v-else-if="moodleLoading" class="moodle-overview-empty">Loading course materials...</p>
+        <p v-else-if="moodleHasLoaded && moodleOverview.length === 0" class="moodle-overview-empty">No materials found.</p>
+        <div v-if="moodleOverview.length" class="moodle-sections">
+          <article v-for="(section, sectionIdx) in moodleOverview" :key="section.section_name + '-' + sectionIdx" class="moodle-section-card">
+            <div class="moodle-section-head">
+              <h4>{{ section.section_name }}</h4>
+              <span>{{ section.items.length }} items</span>
+            </div>
+            <div v-if="section.items.length" class="moodle-items">
+              <div v-for="(item, idx) in section.items" :key="section.section_name + '-' + sectionIdx + '-' + idx" class="moodle-item">
+                <span :class="['moodle-badge', moodleBadgeClass(item)]">{{ moodleBadgeLabel(item) }}</span>
+                <div class="moodle-item-main">
+                  <div class="moodle-item-name">{{ item.name }}</div>
+                  <div class="moodle-item-meta">
+                    <span v-if="item.filename">{{ item.filename }}</span>
+                    <span v-if="item.filesize">{{ formatFileSize(item.filesize) }}</span>
+                    <span v-if="item.due_date" class="moodle-deadline">Due {{ formatMoodleDate(item.due_date) }}</span>
+                  </div>
+                </div>
+                <a
+                  v-if="moodleItemUrl(item)"
+                  class="moodle-open-btn"
+                  :href="moodleItemUrl(item)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >Open</a>
+              </div>
+            </div>
+            <p v-else class="moodle-section-empty">No files or activities in this section.</p>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="selectedMoodleCourse && moodleActiveTab === 'grades'" class="moodle-tab-panel">
+        <p v-if="moodleGradesError" class="moodle-overview-error">{{ moodleGradesError }}</p>
+        <p v-else-if="moodleGradesLoading" class="moodle-overview-empty">Loading grades...</p>
+        <p v-else-if="moodleGradesLoaded && moodleGrades.length === 0" class="moodle-overview-empty">No grades available for this course yet.</p>
+        <div v-if="moodleGrades.length" class="moodle-grade-grid">
+          <article v-for="(grade, idx) in moodleGrades" :key="grade.name + '-' + idx" class="moodle-grade-card">
+            <div class="moodle-grade-head">
+              <h4>{{ grade.name }}</h4>
+              <span v-if="grade.type">{{ grade.type }}</span>
+            </div>
+            <div class="moodle-grade-lines">
+              <span v-if="grade.grade">Grade: <strong>{{ grade.grade }}</strong></span>
+              <span v-if="grade.max_grade">Max: {{ grade.max_grade }}</span>
+              <span v-if="grade.percentage">Percentage: {{ grade.percentage }}</span>
+            </div>
+            <p v-if="grade.feedback" class="moodle-grade-feedback">{{ grade.feedback }}</p>
+          </article>
+        </div>
+      </section>
+    </section>
     <!-- CHAT AREA -->
-    <main class="chat-area" ref="chatArea">
+    <main v-else class="chat-area" ref="chatArea">
       <div class="messages">
 
         <div v-if="messages.length === 0" class="welcome">
@@ -839,6 +958,7 @@
               </div>
             </div>
           </div>
+
         </div>
 
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
@@ -862,7 +982,7 @@
     </main>
 
     <!-- INPUT BAR -->
-    <div class="input-bar">
+    <div v-if="mainView !== 'moodle'" class="input-bar">
       <div class="input-container">
         <label :class="['upload-btn', { 'upload-btn--busy': uploading }]" :title="uploading ? 'Wird hochgeladen...' : 'PDF hochladen'">
           <span v-if="uploading">⏳</span><UiIcon v-else name="clip" fallback="📎" cls="attach-icon-img" />
@@ -940,6 +1060,84 @@ const UiIcon = {
 
 marked.use({ breaks: true })
 
+const semesterCourseKeywords = {
+  1: [
+    'Grundlagen der Programmierung',
+    'Rechnernetze',
+    'Einführung in die BWL',
+    'Einführung in die VWL',
+    'Einführung in die Wirtschaftsinformatik',
+    'Grundlagen des Software-Engineering',
+    'Mathematik',
+  ],
+  2: [
+    'Angewandte Programmierung',
+    'Datenmodellierung',
+    'Datenbanksysteme',
+    'Unternehmens- und Personalmanagement',
+    'Buchführung und Bilanzen',
+    'Grundlagen Projektmanagement',
+    'Geschäftsprozesse',
+    'betriebliche Anwendungen',
+  ],
+  3: [
+    'Webtechnologien',
+    'Datenbanktechnologien',
+    'Controlling',
+    'Modellierung von Anwendungssystemen',
+    'Statistik',
+    'Fremdsprache',
+  ],
+  4: [
+    'Investition und Finanzierung',
+    'Wahlpflichtmodul Soft Skills',
+    'Konfliktmanagement',
+    'Fachpraktikum',
+    'Praktikum',
+  ],
+  5: [
+    'Verteilte Anwendungen',
+    'Produktionswirtschaft',
+    'Logistik',
+    'Unternehmenssoftware',
+    'Wahlpflichtmodul Informatik',
+    'AWE',
+    'Life-Hacking',
+    'Fremdsprache',
+  ],
+  6: [
+    'Bachelorarbeit',
+    'Bachelorseminar',
+    'Abschlusskolloquium',
+    'Wahlpflichtmodul Wirtschaftsinformatik',
+    'Ausgewählte Themen der Wirtschaftsinformatik',
+    'AWE-Modul 2',
+  ],
+}
+
+function detectCourseSemester(course) {
+  const text = `${course.fullname || ''} ${course.shortname || ''}`.toLowerCase()
+
+  for (const [semester, keywords] of Object.entries(semesterCourseKeywords)) {
+    if (keywords.some(keyword => text.includes(keyword.toLowerCase()))) {
+      return Number(semester)
+    }
+  }
+
+  return 'other'
+}
+
+const moodleSemesterFilters = [
+  { value: 'all', label: 'All' },
+  { value: 1, label: 'Semester 1' },
+  { value: 2, label: 'Semester 2' },
+  { value: 3, label: 'Semester 3' },
+  { value: 4, label: 'Semester 4' },
+  { value: 5, label: 'Semester 5' },
+  { value: 6, label: 'Semester 6' },
+  { value: 'other', label: 'Sonstiges / AWE / Wahlpflicht' },
+]
+
 export default {
   components: { UiIcon },
   data() {
@@ -958,6 +1156,7 @@ export default {
       ],
       uploading: false,
       activePanel: null,
+      mainView: 'chat',
       uploadStatus: '',
       isListening: false,
       speechSupported: false,
@@ -969,6 +1168,22 @@ export default {
         { value: 'en-GB', label: 'English (UK)' },
         { value: 'de-DE', label: 'Deutsch' }
       ],
+      moodleCourses: [],
+      moodleCoursesLoading: false,
+      moodleCoursesError: '',
+      moodleCoursesLoaded: false,
+      moodleSemesterFilter: 'all',
+      moodleCourseSearch: '',
+      selectedMoodleCourse: null,
+      moodleActiveTab: 'materials',
+      moodleLoading: false,
+      moodleError: '',
+      moodleOverview: [],
+      moodleHasLoaded: false,
+      moodleGrades: [],
+      moodleGradesLoading: false,
+      moodleGradesError: '',
+      moodleGradesLoaded: false,
       lsfSyncing: false,
       lsfSyncStatus: null,
       careerAnalysis: null,
@@ -1032,6 +1247,13 @@ export default {
           label: 'Quiz',
           icon: '🧠',
           iconName: 'web-test',
+          entries: []
+        },
+        {
+          id: 'moodle',
+          label: 'Moodle',
+          icon: '📚',
+          iconName: 'book',
           entries: []
         },
         {
@@ -1111,6 +1333,38 @@ export default {
       if (!this.gradesData?.courses) return []
       const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
       return [...this.gradesData.courses].sort((a, b) => parse(a.grade) - parse(b.grade))
+    },
+    moodleSemesterFilters() {
+      return moodleSemesterFilters
+    },
+    filteredMoodleCourses() {
+      const q = this.moodleCourseSearch.trim().toLowerCase()
+      return this.moodleCourses
+        .map(course => ({ ...course, detectedSemester: detectCourseSemester(course) }))
+        .filter(course => (
+          this.moodleSemesterFilter === 'all' ||
+          course.detectedSemester === this.moodleSemesterFilter
+        ))
+        .filter(course => {
+          if (!q) return true
+          return [
+            course.fullname,
+            course.shortname,
+            String(course.id || ''),
+          ].some(value => String(value || '').toLowerCase().includes(q))
+        })
+    },
+    moodleEmptyMessage() {
+      if (this.moodleCourseSearch.trim()) {
+        return 'No Moodle courses match your search.'
+      }
+      if (typeof this.moodleSemesterFilter === 'number') {
+        return `No Moodle courses found for Semester ${this.moodleSemesterFilter}. You may not be enrolled in this semester yet.`
+      }
+      if (this.moodleSemesterFilter === 'other') {
+        return 'No Moodle courses found for Sonstiges / AWE / Wahlpflicht.'
+      }
+      return 'No courses found.'
     },
     bestCareerMatch() {
       return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
@@ -1281,12 +1535,139 @@ export default {
       localStorage.setItem('darkMode', this.isDark)
     },
     togglePanel(id) {
+      this.mainView = 'chat'
       this.activePanel = this.activePanel === id ? null : id
       if (this.activePanel === 'profil') { this.fetchProfile(); this.fetchCurriculumStatus() }
       if (this.activePanel === 'career' && this.cvStatus === null) this.fetchCvStatus()
     },
+    openMoodlePage() {
+      this.mainView = 'moodle'
+      this.activePanel = null
+      if (!this.moodleCoursesLoaded && !this.moodleCoursesLoading) this.loadMoodleCourses()
+    },
     closePanel() {
       this.activePanel = null
+    },
+    async loadMoodleCourses(force = false) {
+      if (this.moodleCoursesLoading) return
+      if (this.moodleCoursesLoaded && !force) return
+      this.moodleCoursesLoading = true
+      this.moodleCoursesError = ''
+      try {
+        const res = await fetch('/api/moodle/courses')
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleCoursesError = data?.detail || 'Could not load Moodle courses.'
+          return
+        }
+        this.moodleCourses = Array.isArray(data) ? data : []
+        this.moodleCoursesLoaded = true
+      } catch {
+        this.moodleCoursesError = 'Could not load Moodle courses.'
+      } finally {
+        this.moodleCoursesLoading = false
+      }
+    },
+    async selectMoodleCourse(course) {
+      this.selectedMoodleCourse = course
+      this.moodleActiveTab = 'materials'
+      await Promise.all([
+        this.loadMoodleOverview(course.id),
+        this.loadMoodleGrades(course.id),
+      ])
+    },
+    moodleCourseSemesterLabel(course) {
+      const semester = course.detectedSemester ?? detectCourseSemester(course)
+      return semester === 'other'
+        ? 'Sonstiges / AWE / Wahlpflicht'
+        : `Semester ${semester}`
+    },
+    async loadMoodleOverview(courseId = this.selectedMoodleCourse?.id) {
+      if (!courseId || this.moodleLoading) return
+      this.moodleLoading = true
+      this.moodleError = ''
+      this.moodleOverview = []
+      this.moodleHasLoaded = false
+      try {
+        const res = await fetch(`/api/moodle/course/${encodeURIComponent(courseId)}/overview`)
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleError = data?.detail || 'Could not load course materials.'
+          return
+        }
+        this.moodleOverview = Array.isArray(data) ? data : []
+        this.moodleHasLoaded = true
+      } catch {
+        this.moodleError = 'Could not load course materials.'
+      } finally {
+        this.moodleLoading = false
+      }
+    },
+    async loadMoodleGrades(courseId = this.selectedMoodleCourse?.id) {
+      if (!courseId || this.moodleGradesLoading) return
+      this.moodleGradesLoading = true
+      this.moodleGradesError = ''
+      this.moodleGrades = []
+      this.moodleGradesLoaded = false
+      try {
+        const res = await fetch(`/api/moodle/course/${encodeURIComponent(courseId)}/grades`)
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleGradesError = data?.detail || 'Could not load grades.'
+          return
+        }
+        this.moodleGrades = Array.isArray(data?.grades) ? data.grades : []
+        this.moodleGradesLoaded = true
+      } catch {
+        this.moodleGradesError = 'Could not load grades.'
+      } finally {
+        this.moodleGradesLoading = false
+      }
+    },
+    moodleItemUrl(item) {
+      return item.open_url || item.fileurl || item.url || ''
+    },
+    moodleBadgeLabel(item) {
+      if (item.type === 'assignment' || item.modname === 'assign') return 'Assignment'
+      if (item.type === 'url' || item.modname === 'url') return 'URL'
+      const filename = (item.filename || '').toLowerCase()
+      const ext = filename.includes('.') ? filename.split('.').pop() : ''
+      if (ext) return ext.toUpperCase()
+      if (item.type === 'file') return 'File'
+      return item.modname || item.type || 'Item'
+    },
+    moodleBadgeClass(item) {
+      const label = this.moodleBadgeLabel(item).toLowerCase()
+      if (label === 'pdf') return 'moodle-badge--pdf'
+      if (label === 'pptx' || label === 'ppt') return 'moodle-badge--ppt'
+      if (label === 'zip') return 'moodle-badge--zip'
+      if (label === 'py') return 'moodle-badge--py'
+      if (label === 'url') return 'moodle-badge--url'
+      if (label === 'assignment') return 'moodle-badge--assignment'
+      return 'moodle-badge--file'
+    },
+    formatFileSize(bytes) {
+      const n = Number(bytes)
+      if (!Number.isFinite(n) || n <= 0) return ''
+      const units = ['B', 'KB', 'MB', 'GB']
+      let value = n
+      let unit = 0
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024
+        unit++
+      }
+      return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+    },
+    formatMoodleDate(value) {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return value
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
     },
     _genChatId() {
       return (crypto.randomUUID && crypto.randomUUID()) || ('chat-' + Date.now() + '-' + Math.random().toString(16).slice(2))
@@ -1350,10 +1731,12 @@ export default {
       this.tutorSelectedDocs = []
       this.uploadStatus = ''
       this.activePanel = null
+      this.mainView = 'chat'
       this.fetchTutorDocuments()
     },
     switchChat(id) {
       this.activePanel = null
+      this.mainView = 'chat'
       if (id === this.chatId) return
       this.saveMessages()              // aktuellen Chat sichern
       this.chatId = id
@@ -2749,9 +3132,417 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
 }
 .next-class-meta:last-child { margin-bottom: 0; }
 
+.moodle-overview {
+  max-width: 720px;
+  margin: 18px auto 0;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+}
+
+.moodle-overview--page {
+  width: min(920px, calc(100% - 48px));
+  max-width: 920px;
+  max-height: calc(100vh - 64px);
+  margin: 32px auto;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.moodle-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.moodle-overview-header h3 {
+  margin: 0 0 3px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.moodle-overview-header p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.moodle-overview-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.moodle-course-picker {
+  margin-top: 14px;
+}
+
+.moodle-course-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.moodle-refresh-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: var(--primary);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.moodle-refresh-btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--primary); }
+.moodle-refresh-btn:disabled { opacity: 0.6; cursor: default; }
+
+.moodle-filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.moodle-filter-tabs button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.moodle-filter-tabs button:hover,
+.moodle-filter-tabs button.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-course-search {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  background: var(--input-bg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.moodle-course-search:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.moodle-course-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.moodle-course-card {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.moodle-course-card:hover,
+.moodle-course-card.active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-course-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.moodle-course-short,
+.moodle-course-id,
+.moodle-course-semester {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.moodle-course-semester {
+  width: fit-content;
+  margin-top: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-selected {
+  display: grid;
+  gap: 2px;
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.moodle-selected strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.moodle-selected-label {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.moodle-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.moodle-tabs button {
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.moodle-tabs button.active {
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-tab-panel {
+  margin-top: 12px;
+}
+
+.moodle-overview-error {
+  margin: 10px 0 0;
+  color: #ef4444;
+  font-size: 13px;
+}
+
+.moodle-overview-empty,
+.moodle-section-empty {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.moodle-sections {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.moodle-section-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.moodle-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.moodle-section-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.moodle-section-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.moodle-items {
+  display: grid;
+  gap: 7px;
+}
+
+.moodle-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.moodle-badge {
+  min-width: 58px;
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  font-family: 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.moodle-badge--pdf { background: #dc2626; }
+.moodle-badge--ppt { background: #d97706; }
+.moodle-badge--zip { background: #6d28d9; }
+.moodle-badge--py { background: #2563eb; }
+.moodle-badge--url { background: #059669; }
+.moodle-badge--assignment { background: #be185d; }
+.moodle-badge--file { background: #475569; }
+
+.moodle-item-main {
+  min-width: 0;
+}
+
+.moodle-item-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.moodle-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.moodle-item-meta span:not(:last-child)::after {
+  content: "·";
+  margin-left: 6px;
+  color: var(--border);
+}
+
+.moodle-deadline {
+  color: #be185d;
+  font-weight: 600;
+}
+
+.moodle-open-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: var(--primary);
+  background: var(--surface);
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.moodle-open-btn:hover { background: var(--surface-hover); border-color: var(--primary); }
+
+.moodle-grade-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.moodle-grade-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.moodle-grade-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.moodle-grade-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.moodle-grade-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.moodle-grade-lines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.moodle-grade-lines strong { color: var(--text); }
+
+.moodle-grade-feedback {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* 2 columns on medium screens */
 @media (max-width: 660px) {
   .welcome-card { flex: 1 1 calc(50% - 5px); max-width: calc(50% - 5px); }
+  .moodle-overview--page { width: calc(100% - 28px); margin: 18px auto; padding: 14px; }
+  .moodle-tabs { display: flex; width: 100%; }
+  .moodle-tabs button { flex: 1; }
+  .moodle-item { grid-template-columns: auto minmax(0, 1fr); }
+  .moodle-open-btn { grid-column: 2; width: fit-content; }
 }
 /* 1 column on small screens */
 @media (max-width: 420px) {

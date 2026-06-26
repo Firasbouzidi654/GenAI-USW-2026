@@ -227,6 +227,54 @@ async def get_moodle_course_overview(course_id: str) -> list[dict]:
     return sections
 
 
+def _deadline_status(module: dict, due_date: str | None) -> str:
+    if module.get("completiondata", {}).get("state") == 1:
+        return "done"
+    if module.get("availability"):
+        return "restricted"
+    return "open" if due_date else "unknown"
+
+
+def _deadline_item(course_id: str, section_name: str, module: dict) -> dict | None:
+    if module.get("modname") != "assign":
+        return None
+    due_date = _extract_due_date(module)
+    url = module.get("url")
+    item = {
+        "name": module.get("name") or "Assignment",
+        "type": "assignment",
+        "course_id": int(course_id) if str(course_id).isdigit() else course_id,
+        "section_name": section_name,
+        "due_date": due_date,
+        "status": _deadline_status(module, due_date),
+    }
+    if url:
+        item["url"] = url
+        item["open_url"] = url
+    return item
+
+
+async def get_moodle_course_deadlines(course_id: str) -> dict:
+    """Extrahiert Moodle-Deadlines aus Assignment-Modulen eines Kurses."""
+    course_id = str(course_id).strip()
+    if not course_id:
+        raise MoodleError("Keine Moodle-Course-ID angegeben.")
+    raw = await get_moodle_course_content(course_id)
+    deadlines: list[dict] = []
+    for section in raw if isinstance(raw, list) else []:
+        section_name = section.get("name") or section.get("summary") or "Untitled section"
+        for module in section.get("modules", []) or []:
+            item = _deadline_item(course_id, section_name, module)
+            if item:
+                deadlines.append(item)
+
+    deadlines.sort(key=lambda d: (d.get("due_date") is None, d.get("due_date") or ""))
+    return {
+        "course_id": int(course_id) if course_id.isdigit() else course_id,
+        "deadlines": deadlines,
+    }
+
+
 def _clean_text(value) -> str:
     if value is None:
         return ""

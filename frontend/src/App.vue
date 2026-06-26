@@ -834,11 +834,24 @@
         <span class="moodle-selected-label">Selected course</span>
         <strong>{{ selectedMoodleCourse.fullname }}</strong>
         <span>{{ selectedMoodleCourse.shortname }} · Course ID: {{ selectedMoodleCourse.id }}</span>
+        <span v-if="nextMoodleDeadline" class="moodle-next-deadline">
+          Next deadline: {{ nextMoodleDeadline.name }} · {{ formatMoodleDateShort(nextMoodleDeadline.due_date) }}
+        </span>
+        <span v-else-if="moodleDeadlinesLoaded && !moodleDeadlinesLoading" class="moodle-next-deadline">
+          No upcoming Moodle deadline
+        </span>
+      </div>
+
+      <div v-if="selectedMoodleCourse" class="moodle-study-focus">
+        <span class="moodle-study-focus-label">Study Focus</span>
+        <strong>Next Moodle deadline: {{ nextMoodleDeadline ? nextMoodleDeadline.name : 'None' }}</strong>
+        <span>Recommended action: {{ nextMoodleDeadline ? 'Start with related course materials.' : 'Review the newest course materials.' }}</span>
       </div>
 
       <div v-if="selectedMoodleCourse" class="moodle-tabs">
         <button type="button" :class="{ active: moodleActiveTab === 'materials' }" @click="moodleActiveTab = 'materials'">Course Materials</button>
         <button type="button" :class="{ active: moodleActiveTab === 'grades' }" @click="moodleActiveTab = 'grades'">Grades / Notes</button>
+        <button type="button" :class="{ active: moodleActiveTab === 'deadlines' }" @click="moodleActiveTab = 'deadlines'">Deadlines</button>
       </div>
 
       <section v-if="selectedMoodleCourse && moodleActiveTab === 'materials'" class="moodle-tab-panel">
@@ -892,6 +905,33 @@
               <span v-if="grade.percentage">Percentage: {{ grade.percentage }}</span>
             </div>
             <p v-if="grade.feedback" class="moodle-grade-feedback">{{ grade.feedback }}</p>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="selectedMoodleCourse && moodleActiveTab === 'deadlines'" class="moodle-tab-panel">
+        <p v-if="moodleDeadlinesError" class="moodle-overview-error">{{ moodleDeadlinesError }}</p>
+        <p v-else-if="moodleDeadlinesLoading" class="moodle-overview-empty">Loading deadlines...</p>
+        <p v-else-if="moodleDeadlinesLoaded && sortedMoodleDeadlines.length === 0" class="moodle-overview-empty">No Moodle deadlines found for this course.</p>
+        <div v-if="sortedMoodleDeadlines.length" class="moodle-deadline-grid">
+          <article v-for="(deadline, idx) in sortedMoodleDeadlines" :key="deadline.name + '-' + idx" class="moodle-deadline-card">
+            <div class="moodle-deadline-head">
+              <h4>📅 {{ deadline.name }}</h4>
+              <span :class="['moodle-deadline-priority', moodleDeadlinePriorityClass(deadline.due_date)]">{{ getDeadlineStatus(deadline.due_date) }}</span>
+            </div>
+            <div class="moodle-deadline-lines">
+              <span>Course: {{ selectedMoodleCourse.fullname }}</span>
+              <span>Section: {{ deadline.section_name }}</span>
+              <span>Due: {{ deadline.due_date ? formatMoodleDate(deadline.due_date) : 'No date' }}</span>
+              <span>Status: {{ formatMoodleStatus(deadline.status) }}</span>
+            </div>
+            <a
+              v-if="deadline.open_url || deadline.url"
+              class="moodle-open-btn"
+              :href="deadline.open_url || deadline.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Open</a>
           </article>
         </div>
       </section>
@@ -1184,6 +1224,10 @@ export default {
       moodleGradesLoading: false,
       moodleGradesError: '',
       moodleGradesLoaded: false,
+      moodleDeadlines: [],
+      moodleDeadlinesLoading: false,
+      moodleDeadlinesError: '',
+      moodleDeadlinesLoaded: false,
       lsfSyncing: false,
       lsfSyncStatus: null,
       careerAnalysis: null,
@@ -1302,13 +1346,14 @@ export default {
       const mm = String(d.getMonth() + 1).padStart(2, '0')
       const hh = String(d.getHours()).padStart(2, '0')
       const min = String(d.getMinutes()).padStart(2, '0')
+      const sec = String(d.getSeconds()).padStart(2, '0')
       return {
         date: `${days[d.getDay()]}, ${dd}.${mm}.${d.getFullYear()}`,
-        time: `${hh}:${min}`,
+        time: `${hh}:${min}:${sec}`,
       }
     },
     nextClass() {
-      // Reactive: re-evaluates every minute when currentTime ticks.
+      // Reactive: re-evaluates every second when currentTime ticks.
       // Reads from calendarEvents already loaded by fetchCalendarEvents().
       return this.calendarEvents
         .filter(e => new Date(e.start_time) > this.currentTime)
@@ -1365,6 +1410,18 @@ export default {
         return 'No Moodle courses found for Sonstiges / AWE / Wahlpflicht.'
       }
       return 'No courses found.'
+    },
+    sortedMoodleDeadlines() {
+      return [...this.moodleDeadlines].sort((a, b) => {
+        if (!a.due_date && !b.due_date) return 0
+        if (!a.due_date) return 1
+        if (!b.due_date) return -1
+        return new Date(a.due_date) - new Date(b.due_date)
+      })
+    },
+    nextMoodleDeadline() {
+      const now = new Date()
+      return this.sortedMoodleDeadlines.find(d => d.due_date && new Date(d.due_date) >= now) || null
     },
     bestCareerMatch() {
       return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
@@ -1513,7 +1570,7 @@ export default {
     this.fetchTutorDocuments()
     this.fetchGrades()
     this.fetchCareerAnalysis()
-    this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
+    this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 1000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
     if (this.speechSupported) {
@@ -1574,6 +1631,7 @@ export default {
       await Promise.all([
         this.loadMoodleOverview(course.id),
         this.loadMoodleGrades(course.id),
+        this.loadMoodleDeadlines(course.id),
       ])
     },
     moodleCourseSemesterLabel(course) {
@@ -1624,6 +1682,27 @@ export default {
         this.moodleGradesLoading = false
       }
     },
+    async loadMoodleDeadlines(courseId = this.selectedMoodleCourse?.id) {
+      if (!courseId || this.moodleDeadlinesLoading) return
+      this.moodleDeadlinesLoading = true
+      this.moodleDeadlinesError = ''
+      this.moodleDeadlines = []
+      this.moodleDeadlinesLoaded = false
+      try {
+        const res = await fetch(`/api/moodle/course/${encodeURIComponent(courseId)}/deadlines`)
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleDeadlinesError = data?.detail || 'Could not load Moodle deadlines.'
+          return
+        }
+        this.moodleDeadlines = Array.isArray(data?.deadlines) ? data.deadlines : []
+        this.moodleDeadlinesLoaded = true
+      } catch {
+        this.moodleDeadlinesError = 'Could not load Moodle deadlines.'
+      } finally {
+        this.moodleDeadlinesLoading = false
+      }
+    },
     moodleItemUrl(item) {
       return item.open_url || item.fileurl || item.url || ''
     },
@@ -1668,6 +1747,34 @@ export default {
         hour: '2-digit',
         minute: '2-digit',
       })
+    },
+    formatMoodleDateShort(value) {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return value || ''
+      return date.toLocaleDateString(undefined, {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      })
+    },
+    getDeadlineStatus(dueDate) {
+      if (!dueDate) return 'No date'
+
+      const now = new Date()
+      const due = new Date(dueDate)
+      const diffDays = Math.ceil((due - now) / (1000 * 60 * 60 * 24))
+
+      if (diffDays < 0) return 'Overdue'
+      if (diffDays === 0) return 'Due today'
+      if (diffDays <= 7) return 'Due this week'
+      return 'Upcoming'
+    },
+    moodleDeadlinePriorityClass(dueDate) {
+      return 'priority-' + this.getDeadlineStatus(dueDate).toLowerCase().replace(/\s+/g, '-')
+    },
+    formatMoodleStatus(status) {
+      if (!status) return 'Unknown'
+      return String(status).charAt(0).toUpperCase() + String(status).slice(1)
     },
     _genChatId() {
       return (crypto.randomUUID && crypto.randomUUID()) || ('chat-' + Date.now() + '-' + Math.random().toString(16).slice(2))
@@ -3326,6 +3433,33 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   font-weight: 600;
 }
 
+.moodle-next-deadline {
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.moodle-study-focus {
+  display: grid;
+  gap: 3px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--primary-dim);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.moodle-study-focus strong {
+  color: var(--text);
+}
+
+.moodle-study-focus-label {
+  color: var(--primary);
+  font-weight: 700;
+}
+
 .moodle-tabs {
   display: inline-flex;
   gap: 4px;
@@ -3533,6 +3667,56 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.moodle-deadline-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.moodle-deadline-card {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.moodle-deadline-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.moodle-deadline-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.moodle-deadline-priority {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.priority-overdue { background: #dc2626; }
+.priority-due-today { background: #d97706; }
+.priority-due-this-week { background: #7c3aed; }
+.priority-upcoming { background: #059669; }
+.priority-no-date { background: #64748b; }
+
+.moodle-deadline-lines {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* 2 columns on medium screens */

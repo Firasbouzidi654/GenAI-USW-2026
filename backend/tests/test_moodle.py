@@ -34,6 +34,12 @@ def test_moodle_course_grades_without_token_returns_503(client):
     assert "MOODLE_TOKEN" in response.json()["detail"]
 
 
+def test_moodle_course_deadlines_without_token_returns_503(client):
+    response = client.get("/api/moodle/course/123/deadlines")
+    assert response.status_code == 503
+    assert "MOODLE_TOKEN" in response.json()["detail"]
+
+
 @pytest.mark.asyncio
 async def test_moodle_courses_transform(monkeypatch):
     async def fake_user_id():
@@ -161,6 +167,59 @@ async def test_moodle_course_grades_transform(monkeypatch):
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_moodle_course_deadlines_transform(monkeypatch):
+    async def fake_content(_course_id):
+        return [
+            {
+                "name": "Session 1",
+                "modules": [
+                    {
+                        "name": "Submission Presentation 1",
+                        "modname": "assign",
+                        "url": "https://example.test/assign/view.php?id=99",
+                        "dates": [{"label": "Due date", "timestamp": 1893455940}],
+                    },
+                    {
+                        "name": "Regular Forum",
+                        "modname": "forum",
+                        "dates": [{"label": "Due date", "timestamp": 1893455940}],
+                    },
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(moodle_service, "get_moodle_course_content", fake_content)
+
+    result = await moodle_service.get_moodle_course_deadlines("123")
+
+    assert result["course_id"] == 123
+    assert result["deadlines"] == [
+        {
+            "name": "Submission Presentation 1",
+            "type": "assignment",
+            "course_id": 123,
+            "section_name": "Session 1",
+            "due_date": "2029-12-31T23:59:00+00:00",
+            "status": "open",
+            "url": "https://example.test/assign/view.php?id=99",
+            "open_url": "https://example.test/assign/view.php?id=99",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_moodle_course_deadlines_empty(monkeypatch):
+    async def fake_content(_course_id):
+        return [{"name": "Session 1", "modules": [{"name": "Slides", "modname": "resource"}]}]
+
+    monkeypatch.setattr(moodle_service, "get_moodle_course_content", fake_content)
+
+    result = await moodle_service.get_moodle_course_deadlines("123")
+
+    assert result == {"course_id": 123, "deadlines": []}
 
 
 def test_add_token_to_url_handles_urls_without_query():

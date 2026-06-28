@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm
 from app.agents.career_agent import run_career_agent
+from app.agents.curriculum_agent import run_curriculum_agent
 from app.agents.evaluator_agent import run_evaluator_agent
 from app.agents.planner_agent import run_planner_agent
 from app.agents.tutor_agent import run_tutor_agent
@@ -33,11 +34,15 @@ Du bist der Supervisor-Agent einer Lern-App für Studierende an der HTW Berlin.
 Du koordinierst vier Spezial-Agents und beantwortest die Anfrage des Studierenden,
 indem du den/die passenden Agent(en) aufrufst.
 
-Deine vier Spezial-Agents (als Tools verfügbar):
+Deine Spezial-Agents (als Tools verfügbar):
 - ask_tutor: Beantwortet inhaltliche Fragen zu Lernmaterialien und erklärt Konzepte (RAG).
 - ask_evaluator: Analysiert Quiz-Ergebnisse und erkennt Wissenslücken.
 - ask_planner: Erstellt Lernpläne basierend auf Stundenplan, Deadlines und Noten.
 - ask_career: Empfiehlt Berufsfelder und Lernpfade basierend auf den Noten.
+- ask_curriculum: Beantwortet Fragen zum STUDIENVERLAUF / MODULHANDBUCH — welche Module
+  es gibt, welche in einem bestimmten Semester vorgeschrieben sind, worauf ein Modul
+  aufbaut und welche Kompetenzen es vermittelt. Nutze diesen Agent IMMER bei Fragen wie
+  „Welche Module sind im 5. Semester?" oder „Worauf baut Modul X auf?".
 
 Vorgehen:
 1. Verstehe, was der Studierende WIRKLICH will.
@@ -102,10 +107,21 @@ def create_orchestrator(db: AsyncSession, chat_id: str | None = None, user_id: s
         """
         return await run_career_agent(request, db)
 
+    @tool
+    async def ask_curriculum(request: str) -> str:
+        """Fragt den Curriculum-Agent. Für Fragen zum Studienverlauf / Modulhandbuch:
+        welche Module es gibt, welche in einem Semester vorgeschrieben sind, worauf ein
+        Modul aufbaut und welche Kompetenzen es vermittelt.
+
+        Args:
+            request: Die Frage zum Studienverlauf (z.B. 'Welche Module sind im 5. Semester?').
+        """
+        return await run_curriculum_agent(request, db)
+
     llm = get_llm(temperature=0.2)
     return create_agent(
         model=llm,
-        tools=[ask_tutor, ask_evaluator, ask_planner, ask_career],
+        tools=[ask_tutor, ask_evaluator, ask_planner, ask_career, ask_curriculum],
         system_prompt=_SUPERVISOR_SYSTEM_PROMPT,
     )
 

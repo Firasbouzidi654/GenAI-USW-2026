@@ -18,6 +18,10 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text("ALTER TABLE focus_sessions ALTER COLUMN focus_minutes TYPE DOUBLE PRECISION USING focus_minutes::double precision"))
                 await conn.execute(text("ALTER TABLE focus_sessions ALTER COLUMN break_minutes TYPE DOUBLE PRECISION USING break_minutes::double precision"))
                 await conn.execute(text("ALTER TABLE focus_sessions ALTER COLUMN total_focus_time TYPE DOUBLE PRECISION USING total_focus_time::double precision"))
+                await conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS chat_id VARCHAR(64)"))
+                await conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id VARCHAR(64) DEFAULT 'local'"))
+                await conn.execute(text("ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'lsf'"))
+                await conn.execute(text("ALTER TABLE curriculum_modules ADD COLUMN IF NOT EXISTS module_type VARCHAR(32)"))
     except Exception:
         pass
     yield

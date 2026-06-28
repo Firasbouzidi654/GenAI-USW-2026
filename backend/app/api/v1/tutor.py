@@ -10,6 +10,7 @@ from app.models.attempt_answer import AttemptAnswer
 from app.models.quiz import Quiz
 from app.models.quiz_attempt import QuizAttempt
 from app.models.quiz_question import QuizQuestion
+from app.agents.tutor_agent import generate_quiz_review
 from app.services.tutor_service import generate_quiz
 
 router = APIRouter(prefix="/api/tutor")
@@ -75,6 +76,19 @@ class AttemptResultOut(BaseModel):
     total_questions: int
     percentage: float
     answers: list[AnswerResultOut]
+
+
+class ReviewRequest(BaseModel):
+    attempt_id: int
+
+
+class ReviewOut(BaseModel):
+    review: str
+    source_documents: list[str]
+    course_name: str | None
+    score: int
+    total_questions: int
+    percentage: float
 
 
 class QuestionStatsOut(BaseModel):
@@ -250,6 +264,65 @@ async def submit_attempt(quiz_id: int, body: SubmitAttemptRequest, db: AsyncSess
         total_questions=total,
         percentage=round(score / total * 100, 1) if total else 0.0,
         answers=answer_results,
+    )
+
+
+@router.post("/quiz/{quiz_id}/review", response_model=ReviewOut)
+async def review_attempt(quiz_id: int, body: ReviewRequest, db: AsyncSession = Depends(get_db)):
+    """Ausführliche Nachbesprechung eines Quiz-Versuchs: geht die falschen Antworten
+    durch und empfiehlt das passende Material zum Wiederholen."""
+    quiz = (await db.execute(select(Quiz).where(Quiz.id == quiz_id))).scalar_one_or_none()
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz nicht gefunden.")
+    attempt = (await db.execute(
+        select(QuizAttempt).where(QuizAttempt.id == body.attempt_id, QuizAttempt.quiz_id == quiz_id)
+    )).scalar_one_or_none()
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Quiz-Versuch nicht gefunden.")
+
+    ans_rows = (await db.execute(
+        select(AttemptAnswer).where(AttemptAnswer.attempt_id == attempt.id)
+    )).scalars().all()
+    q_ids = [a.question_id for a in ans_rows]
+    questions = {
+        q.id: q for q in (await db.execute(
+            select(QuizQuestion).where(QuizQuestion.id.in_(q_ids))
+        )).scalars().all()
+    }
+    wrong_items: list[dict] = []
+    for a in ans_rows:
+        if a.is_correct:
+            continue
+        q = questions.get(a.question_id)
+        if q is None:
+            continue
+        wrong_items.append({
+            "question": q.question_text,
+            "given": a.given_answer,
+            "correct": q.correct_answer,
+            "explanation": q.explanation,
+        })
+
+    try:
+        review = await generate_quiz_review(
+            quiz_title=quiz.title,
+            source_documents=quiz.source_documents or [],
+            course_name=quiz.course_name,
+            score=attempt.score,
+            total=attempt.total_questions,
+            wrong_items=wrong_items,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    pct = round(attempt.score / attempt.total_questions * 100, 1) if attempt.total_questions else 0.0
+    return ReviewOut(
+        review=review,
+        source_documents=quiz.source_documents or [],
+        course_name=quiz.course_name,
+        score=attempt.score,
+        total_questions=attempt.total_questions,
+        percentage=pct,
     )
 
 

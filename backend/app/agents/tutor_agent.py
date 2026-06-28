@@ -307,3 +307,91 @@ async def generate_quiz_with_agent(
         "title": title or f"Quiz: {doc_label}",
         "questions": valid[:num_questions],
     }
+
+
+_REVIEW_SYSTEM_PROMPT = """
+Du bist ein geduldiger Tutor und gehst mit dem/der Studierenden das Quiz-Ergebnis durch.
+Konzentriere dich auf die FALSCH beantworteten Fragen und erkläre verständlich.
+
+Struktur deiner Antwort (Markdown, auf Deutsch):
+1. Eine kurze, motivierende Einordnung des Ergebnisses (1–2 Sätze).
+2. Abschnitt "## Das solltest du dir nochmal ansehen": Gehe JEDE falsche Frage einzeln durch:
+   - nenne die Frage,
+   - die richtige Antwort,
+   - WARUM sie richtig ist (nutze den bereitgestellten Lernmaterial-Kontext, wenn vorhanden),
+   - das dahinterliegende Konzept in 1–2 Sätzen.
+3. Abschnitt "## Empfehlung zum Wiederholen": Verweise konkret auf das/die Quelldokument(e)
+   und nenne die 2–3 wichtigsten Themen, die der/die Studierende dort nachlesen sollte.
+
+Erfinde keine Fakten. Wenn der Kontext nichts hergibt, erkläre auf Basis der Frage und der
+hinterlegten Erklärung. Sei konkret und knapp — keine Floskeln.
+""".strip()
+
+
+async def generate_quiz_review(
+    quiz_title: str,
+    source_documents: list[str],
+    course_name: str | None,
+    score: int,
+    total: int,
+    wrong_items: list[dict[str, Any]],
+    user_id: str = "local",
+) -> str:
+    """Erstellt eine ausführliche, grounded Nachbesprechung eines Quiz-Versuchs.
+
+    Holt passenden Lernmaterial-Kontext zu den falschen Fragen aus den Quelldokumenten
+    und lässt das LLM die Ergebnisse Schritt für Schritt durchgehen.
+    """
+    percentage = round(score / total * 100, 1) if total else 0.0
+    doc_label = course_name or ", ".join(source_documents) or "den Lernunterlagen"
+
+    # Kontext zu den falsch beantworteten Fragen aus den Quelldokumenten ziehen
+    context = ""
+    if wrong_items and source_documents:
+        query = " ".join((w.get("question") or "") for w in wrong_items)[:1500]
+        try:
+            context = await retrieve_context(
+                query or "Hauptthemen und Konzepte",
+                source_filter=source_documents,
+                n_results=12,
+                threshold=None,
+                chat_id=None,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            logger.warning("Review-Kontext konnte nicht geladen werden: %s", exc)
+
+    wrong_block_lines = []
+    for i, w in enumerate(wrong_items, 1):
+        wrong_block_lines.append(
+            f"{i}. Frage: {w.get('question', '')}\n"
+            f"   Deine Antwort: {w.get('given', '')}\n"
+            f"   Richtige Antwort: {w.get('correct', '')}\n"
+            f"   Hinterlegte Erklärung: {w.get('explanation') or '—'}"
+        )
+    wrong_block = "\n".join(wrong_block_lines) or "(keine falschen Fragen)"
+
+    user_prompt = (
+        f"Quiz: {quiz_title}\nModul/Material: {doc_label}\n"
+        f"Ergebnis: {score}/{total} ({percentage}%)\n\n"
+        f"Falsch beantwortete Fragen:\n{wrong_block}\n\n"
+    )
+    if context:
+        user_prompt += f"Auszug aus dem Lernmaterial (zur Begründung nutzen):\n{context[:6000]}"
+    else:
+        user_prompt += "(Kein Lernmaterial-Kontext verfügbar — erkläre auf Basis der Fragen.)"
+
+    llm = get_llm(temperature=0.3)
+    try:
+        resp = await llm.ainvoke([
+            SystemMessage(content=_REVIEW_SYSTEM_PROMPT),
+            HumanMessage(content=user_prompt),
+        ])
+        text = (
+            resp.content if isinstance(resp.content, str)
+            else " ".join(p.get("text", "") for p in resp.content if isinstance(p, dict))
+        )
+        return text.strip() or "Die Nachbesprechung konnte nicht erstellt werden."
+    except Exception as exc:
+        logger.error("Quiz-Nachbesprechung fehlgeschlagen: %s", exc)
+        raise RuntimeError("Die Nachbesprechung konnte nicht erstellt werden.")

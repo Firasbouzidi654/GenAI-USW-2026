@@ -10,6 +10,7 @@ vom EvaluatorAgent genutzt, um bei Wissenslücken die Vorgängermodule zu empfeh
 from __future__ import annotations
 
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -47,12 +48,46 @@ class _ModuleSchema(BaseModel):
     name: str
     description: str = ""
     semester: str | None = None
+    module_type: str | None = None
     prerequisites: list[str] = Field(default_factory=list)
     competencies: list[str] = Field(default_factory=list)
 
 
 class _ModulesSchema(BaseModel):
     modules: list[_ModuleSchema]
+
+
+# Kopfblock einer Modulseite im HTW-Modulhandbuch, z.B.:
+#   "... <Modulname> 2310\n 1 Studiengang zugeordnete: ...
+#    SEMESTERZUORDNUNG5 ... STATUS DES MODULS Pflichtmodul ..."
+# Diese strukturierten Felder sind VERBINDLICH und zuverlässiger als die LLM-Extraktion.
+_BLOCK_SPLIT_RE = re.compile(r"(?=\n[^\n]{3,80} \d{3,4}\n 1 Studiengang zugeordnete)")
+_NAME_RE = re.compile(r"\n([^\n]{3,80}) \d{3,4}\n 1 Studiengang zugeordnete")
+_SEM_RE = re.compile(r"SEMESTERZUORDNUNG\s*(\d+)")
+_STATUS_RE = re.compile(r"STATUS DES MODULS\s*(Pflicht|Wahlpflicht)modul", re.IGNORECASE)
+
+
+def parse_module_headers(text: str) -> dict[str, dict]:
+    """Liest aus dem Modulhandbuch-Text die strukturierten Kopfblöcke aus und liefert
+    je Modulname (lowercase) {name, semester, module_type}. Deterministisch (Regex),
+    daher genauer als die LLM-Extraktion für Semester & Pflicht/Wahlpflicht.
+    """
+    out: dict[str, dict] = {}
+    for block in _BLOCK_SPLIT_RE.split(text or ""):
+        nm = _NAME_RE.search(block)
+        if not nm:
+            continue
+        name = nm.group(1).strip()
+        sem_m = _SEM_RE.search(block)
+        st_m = _STATUS_RE.search(block)
+        # Semesterzuordnung 0 bedeutet "keinem festen Semester zugeordnet" → None
+        semester = sem_m.group(1) if (sem_m and sem_m.group(1) != "0") else None
+        module_type = None
+        if st_m:
+            module_type = "Pflicht" if st_m.group(1).lower() == "pflicht" else "Wahlpflicht"
+        if semester or module_type:
+            out[name.lower()] = {"name": name, "semester": semester, "module_type": module_type}
+    return out
 
 
 def _chunk(text: str) -> list[str]:
@@ -107,6 +142,18 @@ async def extract_and_store(text: str, db: AsyncSession) -> dict:
                 cur.prerequisites = sorted({*cur.prerequisites, *m.prerequisites})
                 cur.competencies = sorted({*cur.competencies, *m.competencies})
 
+    # Verbindliche Felder (Semester + Pflicht/Wahlpflicht) aus den strukturierten
+    # Kopfblöcken überlagern — deterministisch und damit genauer als die LLM-Werte.
+    headers = parse_module_headers(text)
+    for key, h in headers.items():
+        if key in merged:
+            merged[key].semester = h["semester"]
+            merged[key].module_type = h["module_type"]
+        else:
+            merged[key] = _ModuleSchema(
+                name=h["name"], semester=h["semester"], module_type=h["module_type"]
+            )
+
     if not merged:
         return {"modules": 0, "with_prerequisites": 0}
 
@@ -117,6 +164,7 @@ async def extract_and_store(text: str, db: AsyncSession) -> dict:
                 name=m.name.strip(),
                 description=(m.description or "").strip() or None,
                 semester=(m.semester or None),
+                module_type=(m.module_type or None),
                 prerequisites=[p.strip() for p in m.prerequisites if p.strip()],
                 competencies=[c.strip() for c in m.competencies if c.strip()],
             ))

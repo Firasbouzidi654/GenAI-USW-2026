@@ -2,6 +2,7 @@ node_modules
 .idea
 .venv
 backend/.env
+frontend/.env
 backend/uploads/
 __pycache__/
 *.pyc

@@ -20,6 +20,8 @@ class CurriculumModule(Base):
     name: Mapped[str] = mapped_column(String(255), index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     semester: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # "Pflicht" | "Wahlpflicht" | None — aus "STATUS DES MODULS" des Modulhandbuchs
+    module_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Liste von Modulnamen, auf denen dieses Modul aufbaut (Vorgänger)
     prerequisites: Mapped[list] = mapped_column(JSON, default=list)
     # Kompetenzen/Themen, die das Modul vermittelt

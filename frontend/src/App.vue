@@ -363,7 +363,7 @@
                         :class="['cal-chip', 'cal-chip--' + e.kind]"
                         :title="e.title"
                       >{{ e.title }}</span>
-                      <span v-if="day.events.length > 3" class="cal-more">+{{ day.events.length - 3 }}</span>
+                      <span v-if="day.events.length > 3" class="cal-more">+{{ day.events.length - 3 }} mehr</span>
                     </div>
                   </div>
                 </template>
@@ -875,13 +875,21 @@
                     <span v-if="item.due_date" class="moodle-deadline">Due {{ formatMoodleDate(item.due_date) }}</span>
                   </div>
                 </div>
-                <a
-                  v-if="moodleItemUrl(item)"
-                  class="moodle-open-btn"
-                  :href="moodleItemUrl(item)"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >Open</a>
+                <div class="moodle-item-actions">
+                  <button
+                    v-if="item.filename"
+                    type="button"
+                    class="moodle-open-btn"
+                    @click="askMoodleMaterial(item)"
+                  >Ask AI</button>
+                  <a
+                    v-if="moodleItemUrl(item)"
+                    class="moodle-open-btn"
+                    :href="moodleItemUrl(item)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Open</a>
+                </div>
               </div>
             </div>
             <p v-else class="moodle-section-empty">No files or activities in this section.</p>
@@ -935,6 +943,7 @@
           </article>
         </div>
       </section>
+
     </section>
     <!-- CHAT AREA -->
     <main v-else class="chat-area" ref="chatArea">
@@ -1022,7 +1031,7 @@
     </main>
 
     <!-- INPUT BAR -->
-    <div v-if="mainView !== 'moodle'" class="input-bar">
+    <div class="input-bar">
       <div class="input-container">
         <label :class="['upload-btn', { 'upload-btn--busy': uploading }]" :title="uploading ? 'Wird hochgeladen...' : 'PDF hochladen'">
           <span v-if="uploading">⏳</span><UiIcon v-else name="clip" fallback="📎" cls="attach-icon-img" />
@@ -1030,7 +1039,7 @@
         </label>
         <textarea
           v-model="prompt"
-          :placeholder="isListening ? 'Höre zu…' : 'Frage eingeben…'"
+          :placeholder="chatInputPlaceholder"
           @keydown.enter.exact.prevent="sendPrompt"
           @input="resizeTextarea"
           ref="textarea"
@@ -1422,6 +1431,13 @@ export default {
     nextMoodleDeadline() {
       const now = new Date()
       return this.sortedMoodleDeadlines.find(d => d.due_date && new Date(d.due_date) >= now) || null
+    },
+    chatInputPlaceholder() {
+      if (this.isListening) return 'Höre zu…'
+      if (this.mainView === 'moodle' && this.selectedMoodleCourse) {
+        return 'Frage zum ausgewählten Moodle-Kurs…'
+      }
+      return 'Frage eingeben…'
     },
     bestCareerMatch() {
       return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
@@ -2071,10 +2087,50 @@ export default {
       const lower = text.toLowerCase()
       return keywords.some(kw => lower.includes(kw))
     },
+    buildMoodleChatContext() {
+      if (!this.selectedMoodleCourse) return null
+      return {
+        course_id: this.selectedMoodleCourse.id,
+        course_name: this.selectedMoodleCourse.fullname,
+        course_shortname: this.selectedMoodleCourse.shortname,
+        active_tab: this.moodleActiveTab,
+        sections: (this.moodleOverview || []).map(section => ({
+          section_name: section.section_name || '',
+          items: (section.items || []).map(item => ({
+            name: item.name || '',
+            filename: item.filename || '',
+            type: item.type || '',
+            modname: item.modname || '',
+            fileurl: item.fileurl || '',
+            open_url: item.open_url || '',
+            url: item.url || '',
+          })),
+        })),
+      }
+    },
+    isMoodlePromptQuestion(text, moodleContext = null) {
+      const lower = text.toLowerCase()
+      if (lower.includes('moodle')) return true
+      if (!moodleContext) return false
+      const materialKeywords = [
+        'session', 'slides', 'slide', 'folie', 'folien', 'ppt', 'pptx',
+        'pdf', 'material', 'materialien',
+      ]
+      return materialKeywords.some(kw => lower.includes(kw))
+    },
     // --- END STUDY ADVISOR keyword detection ---
 
     suggestPrompt(text) {
       this.prompt = text
+      this.$nextTick(() => {
+        this.resizeTextarea()
+        this.sendPrompt()
+      })
+    },
+    askMoodleMaterial(item) {
+      const label = item?.filename || item?.name
+      if (!label) return
+      this.prompt = `Erkläre ${label}`
       this.$nextTick(() => {
         this.resizeTextarea()
         this.sendPrompt()
@@ -2092,12 +2148,17 @@ export default {
       this.messages.push({ role: 'assistant', content: '' })
       this.loading = true
       this.updateChatTitle(userPrompt)
+      const moodleContext = this.buildMoodleChatContext()
+      const usePromptChat = this.isMoodlePromptQuestion(userPrompt, moodleContext)
+      if (this.mainView === 'moodle') {
+        this.mainView = 'chat'
+      }
 
       await this.$nextTick()
       this.scrollToBottom()
 
       // --- STUDY ADVISOR: route planner-related questions to the Study Advisor ---
-      if (this.isPlannerQuestion(userPrompt)) {
+      if (!usePromptChat && this.isPlannerQuestion(userPrompt)) {
         try {
           const res = await fetch('/api/ai/study-advisor', {
             method: 'POST',
@@ -2126,7 +2187,11 @@ export default {
         const res = await fetch('/api/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: userPrompt, chat_id: this.chatId })
+          body: JSON.stringify({
+            prompt: userPrompt,
+            chat_id: this.chatId,
+            ...(moodleContext ? { moodle_context: moodleContext } : {}),
+          })
         })
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -3608,12 +3673,19 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   font-weight: 600;
 }
 
+.moodle-item-actions {
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .moodle-open-btn {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 9px;
   color: var(--primary);
   background: var(--surface);
+  cursor: pointer;
   font-size: 12px;
   text-decoration: none;
   white-space: nowrap;
@@ -3726,7 +3798,8 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   .moodle-tabs { display: flex; width: 100%; }
   .moodle-tabs button { flex: 1; }
   .moodle-item { grid-template-columns: auto minmax(0, 1fr); }
-  .moodle-open-btn { grid-column: 2; width: fit-content; }
+  .moodle-item-actions { grid-column: 2; justify-content: flex-start; }
+  .moodle-open-btn { width: fit-content; }
 }
 /* 1 column on small screens */
 @media (max-width: 420px) {
@@ -5284,57 +5357,79 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .cv-hint { font-size: 11px; color: var(--text-muted); margin: 6px 0 0; line-height: 1.4; }
 
 /* ── Kalender (Tag/Woche/Monat) ──────────────────────────────────── */
-.dropdown--calendar { width: 640px; max-width: calc(100vw - 280px); }
+.dropdown--calendar { width: 860px; max-width: calc(100vw - 280px); }
 
-.cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.cal-views { display: inline-flex; background: var(--surface-hover); border-radius: 8px; padding: 2px; }
-.cal-view-btn { border: none; background: none; padding: 5px 12px; border-radius: 6px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
-.cal-view-btn.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-.cal-nav { display: inline-flex; align-items: center; gap: 4px; }
-.cal-nav-btn { width: 28px; height: 28px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; cursor: pointer; font-size: 16px; color: var(--text); line-height: 1; }
-.cal-nav-btn:hover { background: var(--surface-hover); }
-.cal-today-btn { padding: 5px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--text); }
-.cal-today-btn:hover { background: var(--surface-hover); }
-.cal-period { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 8px; text-align: center; }
+.cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.cal-views { display: inline-flex; background: var(--surface-hover); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+.cal-view-btn { border: none; background: none; padding: 7px 16px; border-radius: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-muted); cursor: pointer; }
+.cal-view-btn:hover { color: var(--text); background: var(--surface); }
+.cal-view-btn.active { background: var(--surface); color: var(--primary); font-weight: 700; box-shadow: var(--shadow); }
+.cal-nav { display: inline-flex; align-items: center; gap: 6px; }
+.cal-nav-btn { width: 34px; height: 34px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; cursor: pointer; font-size: 20px; color: var(--text); line-height: 1; }
+.cal-nav-btn:hover { background: var(--surface-hover); border-color: var(--primary); color: var(--primary); }
+.cal-today-btn { padding: 7px 14px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text); }
+.cal-today-btn:hover { background: var(--surface-hover); border-color: var(--primary); color: var(--primary); }
+.cal-period { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 10px; text-align: center; }
 
 /* Monat */
-.cal-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
-.cal-weekday { font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; padding: 2px 0; }
+.cal-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cal-weekday { font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: center; padding: 4px 0; }
 .cal-cell {
-  min-height: 74px; border: 1px solid var(--border); border-radius: 7px; padding: 4px;
-  cursor: pointer; display: flex; flex-direction: column; gap: 2px; overflow: hidden;
+  min-height: 118px; border: 1px solid var(--border); border-radius: 9px; padding: 8px;
+  cursor: pointer; display: flex; flex-direction: column; gap: 6px; overflow: hidden;
   background: var(--surface); transition: background 0.12s;
 }
-.cal-cell:hover { background: var(--surface-hover); }
+.cal-cell:hover { background: var(--surface-hover); border-color: var(--primary); }
 .cal-cell--out { opacity: 0.4; }
 .cal-cell--today { border-color: var(--primary); }
-.cal-cell-num { font-size: 12px; font-weight: 600; color: var(--text); align-self: flex-end; }
-.cal-cell--today .cal-cell-num { background: var(--primary); color: #fff; border-radius: 50%; width: 18px; height: 18px; display: grid; place-items: center; }
-.cal-cell-events { display: flex; flex-direction: column; gap: 2px; }
-.cal-chip { font-size: 10px; padding: 1px 4px; border-radius: 4px; background: var(--primary-dim); color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cal-more { font-size: 10px; color: var(--text-muted); }
+.cal-cell-num { font-size: 13px; font-weight: 700; color: var(--text); align-self: flex-end; }
+.cal-cell--today .cal-cell-num { background: var(--primary); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; }
+.cal-cell-events { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cal-chip {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--primary-dim);
+  color: var(--primary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.cal-more {
+  width: fit-content;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
 
 /* Woche */
-.cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-.cal-week-col { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; min-height: 120px; background: var(--surface); }
+.cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; }
+.cal-week-col { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; min-height: 220px; background: var(--surface); }
 .cal-week-col--today { border-color: var(--primary); }
-.cal-week-head { padding: 5px; text-align: center; cursor: pointer; background: var(--surface-hover); }
-.cal-week-dow { display: block; font-size: 11px; color: var(--text-muted); }
-.cal-week-date { font-size: 13px; font-weight: 600; color: var(--text); }
-.cal-week-events { padding: 4px; display: flex; flex-direction: column; gap: 3px; }
-.cal-week-empty { font-size: 11px; color: var(--text-muted); text-align: center; }
-.cal-event { font-size: 10.5px; padding: 3px 5px; border-radius: 5px; background: var(--primary-dim); display: flex; flex-direction: column; }
-.cal-event-time { font-weight: 600; color: var(--primary); }
-.cal-event-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-week-head { padding: 8px; text-align: center; cursor: pointer; background: var(--surface-hover); border-bottom: 1px solid var(--border); }
+.cal-week-dow { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.cal-week-date { font-size: 15px; font-weight: 700; color: var(--text); }
+.cal-week-events { padding: 8px; display: flex; flex-direction: column; gap: 7px; }
+.cal-week-empty { font-size: 12px; color: var(--text-muted); text-align: center; padding: 10px 0; }
+.cal-event { font-size: 12px; line-height: 1.35; padding: 7px 8px; border: 1px solid transparent; border-radius: 7px; background: var(--primary-dim); display: flex; flex-direction: column; gap: 2px; }
+.cal-event-time { font-weight: 700; color: var(--primary); }
+.cal-event-name { color: var(--text); overflow-wrap: anywhere; }
 
 /* Tag */
-.cal-day { display: flex; flex-direction: column; gap: 6px; }
-.cal-day-event { display: flex; gap: 10px; border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: 8px; padding: 8px 10px; }
-.cal-day-time { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--primary); min-width: 46px; }
+.cal-day { display: flex; flex-direction: column; gap: 10px; }
+.cal-day-event { display: flex; gap: 14px; border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.cal-day-time { display: flex; flex-direction: column; font-size: 13px; font-weight: 700; color: var(--primary); min-width: 56px; line-height: 1.35; }
 .cal-day-time-end { color: var(--text-muted); font-weight: 400; }
-.cal-day-body { display: flex; flex-direction: column; gap: 3px; }
-.cal-day-top { display: flex; align-items: center; gap: 6px; }
-.cal-day-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.cal-day-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cal-day-top { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.cal-day-name { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
 
 /* ── Career: Datenbasis ──────────────────────────────────────────── */
 .career-datasources { margin: 10px 0; padding: 10px 12px; background: var(--surface-hover); border: 1px solid var(--border); border-radius: 10px; }
@@ -5393,34 +5488,54 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .cal-add-save:disabled { opacity: 0.6; }
 .cal-add-cancel { padding: 7px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-muted); font-size: 12.5px; cursor: pointer; }
 
-.cal-legend { display: flex; gap: 12px; margin-bottom: 8px; }
-.cal-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
-.cal-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.cal-legend-item { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; background: var(--surface); font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.cal-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .cal-dot--class { background: #8b5cf6; }
 .cal-dot--user { background: #0ea5e9; }
 .cal-dot--deadline { background: #ef4444; }
 
 /* Event-Farben je Art */
-.cal-chip--class { background: var(--primary-dim); color: var(--primary); }
-.cal-chip--user { background: #e0f2fe; color: #0369a1; }
-.cal-chip--deadline { background: #fee2e2; color: #b91c1c; font-weight: 600; }
+.cal-chip--class { background: var(--primary-dim); color: var(--primary); border-left: 3px solid #8b5cf6; }
+.cal-chip--user { background: #e0f2fe; color: #0369a1; border-left: 3px solid #0ea5e9; }
+.cal-chip--deadline { background: #fee2e2; color: #b91c1c; border-left: 3px solid #ef4444; font-weight: 700; }
 .dark .cal-chip--user { background: #0c2a3a; color: #7dd3fc; }
 .dark .cal-chip--deadline { background: #2d1515; color: #fca5a5; }
 
 .cal-event--class .cal-event-time { color: var(--primary); }
-.cal-event--user { background: #e0f2fe; }
+.cal-event--user { background: #e0f2fe; border-color: #bae6fd; }
 .cal-event--user .cal-event-time { color: #0369a1; }
-.cal-event--deadline { background: #fee2e2; }
+.cal-event--deadline { background: #fee2e2; border-color: #fecaca; }
 .cal-event--deadline .cal-event-time { color: #b91c1c; }
 .dark .cal-event--user { background: #0c2a3a; }
 .dark .cal-event--deadline { background: #2d1515; }
 
 .cal-day-event--user { border-left-color: #0ea5e9; }
 .cal-day-event--deadline { border-left-color: #ef4444; }
-.cal-day-allday { font-size: 11px; color: var(--text-muted); }
+.cal-day-allday { font-size: 12px; color: var(--text-muted); }
 .cal-badge-user { background: #e0f2fe; color: #0369a1; }
-.cal-day-del { margin-top: 4px; align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; padding: 3px 8px; color: #dc2626; cursor: pointer; }
+.cal-day-del { margin-top: 4px; align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; padding: 5px 10px; color: #dc2626; cursor: pointer; }
 .cal-day-del:hover { background: #fee2e2; }
+
+@media (max-width: 920px) {
+  .dropdown--calendar { width: calc(100vw - 32px); max-width: calc(100vw - 32px); }
+  .cal-toolbar { align-items: stretch; flex-direction: column; }
+  .cal-nav { justify-content: space-between; }
+  .cal-month { gap: 4px; }
+  .cal-cell { min-height: 96px; padding: 6px; }
+  .cal-chip { font-size: 10.5px; padding: 3px 5px; -webkit-line-clamp: 1; }
+  .cal-week { grid-template-columns: repeat(7, minmax(96px, 1fr)); overflow-x: auto; padding-bottom: 4px; }
+}
+
+@media (max-width: 660px) {
+  .dropdown--calendar { width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
+  .cal-view-btn { flex: 1; padding: 7px 8px; }
+  .cal-views { display: flex; width: 100%; }
+  .cal-cell { min-height: 84px; }
+  .cal-cell-num { font-size: 12px; }
+  .cal-day-event { flex-direction: column; gap: 8px; }
+  .cal-day-time { flex-direction: row; gap: 8px; min-width: 0; }
+}
 
 /* ── Planner: Lernplan-Generator ─────────────────────────────────── */
 .planner-plan-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 10px 12px; margin-bottom: 10px; border: none; border-radius: 9px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }

@@ -6,6 +6,7 @@ Bedarf verkettet.
 """
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -23,6 +24,7 @@ class PromptRequest(BaseModel):
     prompt: str
     chat_id: str | None = None
     user_id: str = "local"
+    moodle_context: dict[str, Any] | None = None
 
 
 @router.post("/prompt")
@@ -31,7 +33,13 @@ async def prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
 
     async def generate():
         try:
-            answer = await run_orchestrator(body.prompt, db, body.chat_id, body.user_id)
+            answer = await run_orchestrator(
+                body.prompt,
+                db,
+                body.chat_id,
+                body.user_id,
+                moodle_context=body.moodle_context,
+            )
         except Exception:
             yield f"data: {json.dumps('[ERROR]')}\n\n"
             yield "data: [DONE]\n\n"

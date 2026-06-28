@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
 # Dateiendungen, die wir als Lernmaterial indizieren
-_INDEXABLE_EXT = (".pdf",)
+_INDEXABLE_EXT = (".pdf", ".pptx", ".docx")
 
 
 class MoodleError(RuntimeError):
@@ -207,6 +207,75 @@ def _overview_item(module: dict, content: dict | None = None) -> dict:
     return item
 
 
+def _extract_pdf_text(data: bytes) -> str:
+    return _extract_file_text(filename or fileurl, data)
+
+
+def _shape_text_lines(shape) -> list[str]:
+    lines: list[str] = []
+    text = getattr(shape, "text", "")
+    if text:
+        lines.extend(line.strip() for line in text.splitlines() if line.strip())
+
+    table = getattr(shape, "table", None)
+    if table is not None:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text and cell.text.strip()]
+            if cells:
+                lines.append(" | ".join(cells))
+
+    for child in getattr(shape, "shapes", []) or []:
+        lines.extend(_shape_text_lines(child))
+    return lines
+
+
+def _extract_pptx_text(data: bytes) -> str:
+    try:
+        from pptx import Presentation
+    except ImportError:
+        logger.warning("python-pptx ist nicht installiert; PPTX kann nicht gelesen werden.")
+        return ""
+    try:
+        presentation = Presentation(io.BytesIO(data))
+        slides: list[str] = []
+        for slide_index, slide in enumerate(presentation.slides, start=1):
+            texts: list[str] = []
+            for shape in slide.shapes:
+                texts.extend(_shape_text_lines(shape))
+            if texts:
+                title = texts[0]
+                slides.append(f"Slide {slide_index}: {title}\n" + "\n".join(texts))
+        return "\n\n".join(slides).strip()
+    except Exception as exc:
+        logger.warning("PPTX aus Moodle nicht lesbar: %s", exc)
+        return ""
+
+
+def _extract_docx_text(data: bytes) -> str:
+    try:
+        from docx import Document
+    except ImportError:
+        logger.warning("python-docx ist nicht installiert; DOCX kann nicht gelesen werden.")
+        return ""
+    try:
+        document = Document(io.BytesIO(data))
+        return "\n".join(p.text for p in document.paragraphs if p.text and p.text.strip()).strip()
+    except Exception as exc:
+        logger.warning("DOCX aus Moodle nicht lesbar: %s", exc)
+        return ""
+
+
+def _extract_file_text(filename: str, data: bytes) -> str:
+    lower = (filename or "").lower()
+    if lower.endswith(".pdf"):
+        return _extract_pdf_text(data)
+    if lower.endswith(".pptx"):
+        return _extract_pptx_text(data)
+    if lower.endswith(".docx"):
+        return _extract_docx_text(data)
+    return ""
+
+
 async def get_moodle_course_overview(course_id: str) -> list[dict]:
     """Vereinfacht core_course_get_contents zu Sections mit Dateien, Links und Aufgaben."""
     raw = await get_moodle_course_content(course_id)
@@ -360,11 +429,13 @@ async def get_course_files(course_id: int) -> list[dict]:
                     "fileurl": fileurl,
                     "module": module.get("name") or "",
                     "section": section.get("name") or "",
+                    "mimetype": content.get("mimetype") or "",
+                    "filesize": content.get("filesize") or 0,
                 })
     return files
 
 
-async def download_file_text(fileurl: str) -> str:
+async def download_file_text(fileurl: str, filename: str = "") -> str:
     """Lädt eine Datei (mit Token) herunter und extrahiert den Text (nur PDF)."""
     sep = "&" if "?" in fileurl else "?"
     url = f"{fileurl}{sep}token={settings.moodle_token}"
@@ -376,14 +447,7 @@ async def download_file_text(fileurl: str) -> str:
     except httpx.HTTPError as exc:
         raise MoodleError(f"Datei-Download fehlgeschlagen: {exc}") from exc
 
-    try:
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(data))
-        return "\n".join((p.extract_text() or "") for p in reader.pages).strip()
-    except Exception as exc:
-        logger.warning("PDF aus Moodle nicht lesbar: %s", exc)
-        return ""
+    return _extract_file_text(filename or fileurl, data)
 
 
 def _match_course(courses: list[dict], name: str) -> dict | None:
@@ -430,14 +494,20 @@ async def index_course_by_name(
     indexed, chunks = 0, 0
     for f in files[:max_files]:
         try:
-            text = await download_file_text(f["fileurl"])
+            text = await download_file_text(f["fileurl"], f["filename"])
         except MoodleError:
             continue
         if not text:
             continue
         n = await asyncio.to_thread(
             index_text, f["filename"], text, chat_id, user_id,
-            {"course_id": course["id"], "course_name": course["fullname"], "moodle": "1"},
+            {
+                "course_id": course["id"],
+                "course_name": course["fullname"],
+                "moodle": "1",
+                "section": f.get("section") or "",
+                "module": f.get("module") or "",
+            },
         )
         if n:
             indexed += 1

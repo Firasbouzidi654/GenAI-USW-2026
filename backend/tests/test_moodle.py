@@ -1,5 +1,7 @@
 """Tests fuer Moodle-Endpunkte und Overview-Transformation."""
 
+import io
+
 import pytest
 
 from app.services import moodle_service
@@ -232,3 +234,68 @@ def test_add_token_to_url_handles_urls_with_query():
         "https://example.test/file.pdf?forcedownload=1", "abc"
     )
     assert result == "https://example.test/file.pdf?forcedownload=1&token=abc"
+
+
+@pytest.mark.asyncio
+async def test_moodle_course_files_include_pptx_and_docx(monkeypatch):
+    async def fake_call(wsfunction, **params):
+        assert wsfunction == "core_course_get_contents"
+        assert params["courseid"] == 123
+        return [
+            {
+                "name": "Session 1",
+                "modules": [
+                    {
+                        "name": "Slides",
+                        "contents": [
+                            {
+                                "type": "file",
+                                "filename": "slides.pptx",
+                                "fileurl": "https://example.test/slides.pptx",
+                            },
+                            {
+                                "type": "file",
+                                "filename": "notes.docx",
+                                "fileurl": "https://example.test/notes.docx",
+                            },
+                            {
+                                "type": "file",
+                                "filename": "archive.zip",
+                                "fileurl": "https://example.test/archive.zip",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(moodle_service, "_call", fake_call)
+
+    files = await moodle_service.get_course_files(123)
+
+    assert [f["filename"] for f in files] == ["slides.pptx", "notes.docx"]
+
+
+def test_pptx_extraction_preserves_every_slide_title_and_content():
+    from pptx import Presentation
+
+    presentation = Presentation()
+    slide1 = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide1.shapes.title.text = "Promises Grundlagen"
+    slide1.placeholders[1].text = "Asynchrone Werte\nthen und catch"
+
+    slide2 = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide2.shapes.title.text = "Async Await"
+    slide2.placeholders[1].text = "Lesbarer Kontrollfluss\nFehlerbehandlung"
+
+    buffer = io.BytesIO()
+    presentation.save(buffer)
+
+    text = moodle_service._extract_pptx_text(buffer.getvalue())
+
+    assert "Slide 1: Promises Grundlagen" in text
+    assert "Asynchrone Werte" in text
+    assert "then und catch" in text
+    assert "Slide 2: Async Await" in text
+    assert "Lesbarer Kontrollfluss" in text
+    assert "Fehlerbehandlung" in text

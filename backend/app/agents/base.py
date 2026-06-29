@@ -67,11 +67,41 @@ async def run_with_model_fallback(
     ) from last_exc
 
 
+def _message_role(msg) -> str:
+    role = getattr(msg, "type", None) or getattr(msg, "role", None)
+    if role:
+        return str(role).lower()
+    class_name = msg.__class__.__name__.lower()
+    if "tool" in class_name:
+        return "tool"
+    if "human" in class_name:
+        return "human"
+    if "ai" in class_name or "assistant" in class_name:
+        return "ai"
+    return class_name
+
+
+def _string_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+    return ""
+
+
 def extract_text_output(agent_result: dict) -> str:
-    """Extrahiert die letzte Textantwort aus dem LangGraph-Agenten-Ergebnis."""
+    """Extrahiert die letzte sichtbare Assistant-Antwort aus dem Agenten-Ergebnis."""
     messages = agent_result.get("messages", [])
     for msg in reversed(messages):
-        content = getattr(msg, "content", None)
-        if content and isinstance(content, str):
+        if _message_role(msg) not in {"ai", "assistant"}:
+            continue
+        content = _string_content(getattr(msg, "content", None)).strip()
+        if content:
             return content
     return ""

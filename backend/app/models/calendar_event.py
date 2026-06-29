@@ -19,6 +19,7 @@ class CalendarEvent(Base):
     # Herkunft: "lsf" (aus dem LSF-Sync) oder "user" (selbst hinzugefügt).
     # Der LSF-Sync ersetzt nur "lsf"-Events; eigene Termine bleiben erhalten.
     source: Mapped[str] = mapped_column(String(16), default="lsf")
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

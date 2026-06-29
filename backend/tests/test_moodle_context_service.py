@@ -1,16 +1,21 @@
 """Tests for lightweight Moodle context service and Orchestrator usage."""
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agents import orchestrator
+from app.api.v1 import study_advisor as study_advisor_api
 from app.services import moodle_context_service as moodle_context
 
 
 @pytest.fixture(autouse=True)
 def configured_moodle(monkeypatch):
+    moodle_context.clear_moodle_deadline_cache()
     monkeypatch.setattr(moodle_context.moodle_service, "is_configured", lambda: True)
+    yield
+    moodle_context.clear_moodle_deadline_cache()
 
 
 @pytest.fixture
@@ -152,6 +157,79 @@ async def test_orchestrator_uses_moodle_context_for_explicit_moodle_deadlines(mo
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_uses_moodle_context_for_semester_course_question(monkeypatch):
+    context = AsyncMock(return_value="Moodle-Kurse fuer Semester 5")
+    create_orchestrator = MagicMock()
+    monkeypatch.setattr(orchestrator, "get_moodle_context_for_message", context)
+    monkeypatch.setattr(orchestrator, "create_orchestrator", create_orchestrator)
+
+    result = await orchestrator.run_orchestrator(
+        "Which courses belong to my 5th semester?",
+        MagicMock(),
+    )
+
+    assert result == "Moodle-Kurse fuer Semester 5"
+    context.assert_awaited_once()
+    create_orchestrator.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Show my 5th semester courses",
+        "Welche Kurse gehoeren zu meinem 5. Semester?",
+        "Show my SoSe2026 Moodle courses",
+    ],
+)
+async def test_orchestrator_uses_moodle_context_for_course_semester_variants(message, monkeypatch):
+    context = AsyncMock(return_value="Moodle-Kurse fuer Semester 5")
+    create_orchestrator = MagicMock()
+    monkeypatch.setattr(orchestrator, "get_moodle_context_for_message", context)
+    monkeypatch.setattr(orchestrator, "create_orchestrator", create_orchestrator)
+
+    result = await orchestrator.run_orchestrator(message, MagicMock())
+
+    assert result == "Moodle-Kurse fuer Semester 5"
+    context.assert_awaited_once()
+    create_orchestrator.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_moodle_context_for_next_moodle_deadline(monkeypatch):
+    context = AsyncMock(return_value="Naechste Moodle-Deadline")
+    create_orchestrator = MagicMock()
+    monkeypatch.setattr(orchestrator, "get_moodle_context_for_message", context)
+    monkeypatch.setattr(orchestrator, "create_orchestrator", create_orchestrator)
+
+    result = await orchestrator.run_orchestrator(
+        "What is my next Moodle deadline?",
+        MagicMock(),
+    )
+
+    assert result == "Naechste Moodle-Deadline"
+    context.assert_awaited_once()
+    create_orchestrator.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_study_advisor_endpoint_bypasses_planner_for_moodle_course_question(monkeypatch):
+    context = AsyncMock(return_value="Moodle-Kurse fuer Semester 5")
+    planner = AsyncMock(return_value="planner answer")
+    monkeypatch.setattr(study_advisor_api, "get_moodle_context_for_message", context)
+    monkeypatch.setattr(study_advisor_api, "run_planner_agent", planner)
+
+    result = await study_advisor_api.study_advisor(
+        study_advisor_api.StudyAdvisorRequest(message="Which courses belong to my 5th semester?"),
+        MagicMock(),
+    )
+
+    assert result == {"answer": "Moodle-Kurse fuer Semester 5"}
+    context.assert_awaited_once()
+    planner.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_keeps_non_moodle_routing_unchanged(monkeypatch):
     context = AsyncMock(return_value="moodle")
     fake_agent = MagicMock()
@@ -198,6 +276,12 @@ async def test_orchestrator_routes_selected_moodle_session_to_tutor(monkeypatch)
 
 @pytest.fixture
 def semester_5_moodle(monkeypatch):
+    monkeypatch.setattr(
+        moodle_context,
+        "_now_utc",
+        lambda: datetime(2026, 6, 29, 0, 0, tzinfo=timezone.utc),
+    )
+
     async def fake_courses():
         return [
             {
@@ -265,7 +349,13 @@ def semester_5_moodle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_global_next_moodle_deadline_across_all_courses(semester_5_moodle):
+async def test_global_next_moodle_deadline_across_all_courses_on_june_29(semester_5_moodle, monkeypatch):
+    monkeypatch.setattr(
+        moodle_context,
+        "_now_utc",
+        lambda: datetime(2026, 6, 29, 0, 0, tzinfo=timezone.utc),
+    )
+
     result = await moodle_context.get_moodle_context_for_message("Was ist meine nächste Moodle-Aufgabe?")
 
     assert "Submission Presentation 3" in result
@@ -273,6 +363,127 @@ async def test_global_next_moodle_deadline_across_all_courses(semester_5_moodle)
     assert "30.06.2026, 08:00" in result
     assert "Finale Projektabgabe" not in result
     assert "AWE Life-Hacking" not in result
+
+
+@pytest.mark.asyncio
+async def test_global_next_moodle_deadline_ignores_past_deadlines_on_july_2(semester_5_moodle, monkeypatch):
+    monkeypatch.setattr(
+        moodle_context,
+        "_now_utc",
+        lambda: datetime(2026, 7, 2, 0, 0, tzinfo=timezone.utc),
+    )
+
+    result = await moodle_context.get_moodle_context_for_message("What is my next Moodle deadline?")
+
+    assert "Finale Projektabgabe" in result
+    assert "B3.1 Webtechnologien" in result
+    assert "05.07.2026, 23:59" in result
+    assert "Submission Presentation 3" not in result
+
+
+@pytest.mark.asyncio
+async def test_global_upcoming_moodle_deadlines_include_all_courses_sorted(semester_5_moodle):
+    result = await moodle_context.get_moodle_context_for_message("What are my upcoming Moodle deadlines?")
+
+    first = result.index("Submission Presentation 3")
+    second = result.index("Finale Projektabgabe")
+    assert first < second
+    assert "1. Submission Presentation 3" in result
+    assert "Course: B5.3 Unternehmenssoftware" in result
+    assert "Due: 30.06.2026, 08:00" in result
+    assert "2. Finale Projektabgabe" in result
+    assert "Course: B3.1 Webtechnologien" in result
+    assert "Due: 05.07.2026, 23:59" in result
+    assert "Do you want me to add these deadlines to your calendar?" in result
+    assert "Submission Presentation 1" not in result
+    assert "Intermediate Presentation" not in result
+
+
+@pytest.mark.asyncio
+async def test_moodle_deadline_flow_reuses_short_ttl_cache(monkeypatch):
+    calls = {"courses": 0, "deadlines": 0}
+
+    async def fake_courses():
+        calls["courses"] += 1
+        return [
+            {
+                "id": 58776,
+                "fullname": "B5.3 Unternehmenssoftware (SL) - 1. Zug + 2. Zug - SoSe2026",
+                "shortname": "USWS-230338-9+10",
+                "semester": "SoSe 2026",
+            },
+            {
+                "id": 40001,
+                "fullname": "B3.1 Webtechnologien (SL) - 1. Zug + 2. Zug - SoSe2026",
+                "shortname": "WEBTECH-OLD",
+                "semester": "SoSe 2026",
+            },
+        ]
+
+    async def fake_deadlines(course_id):
+        calls["deadlines"] += 1
+        return {
+            "course_id": int(course_id),
+            "deadlines": [
+                {
+                    "name": f"Deadline {course_id}",
+                    "due_date": "2026-07-05T21:59:00+00:00",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(moodle_context.moodle_service, "get_moodle_courses", fake_courses)
+    monkeypatch.setattr(moodle_context.moodle_service, "get_moodle_course_deadlines", fake_deadlines)
+
+    first = await moodle_context.get_moodle_context_for_message("What are my upcoming Moodle deadlines?")
+    second = await moodle_context.get_moodle_context_for_message("What are my upcoming Moodle deadlines?")
+
+    assert "Deadline 58776" in first
+    assert "Deadline 40001" in second
+    assert calls == {"courses": 1, "deadlines": 2}
+
+
+@pytest.mark.asyncio
+async def test_moodle_deadline_cache_refreshes_after_ttl(monkeypatch):
+    calls = {"courses": 0, "deadlines": 0}
+    current_time = {"value": 1000.0}
+
+    async def fake_courses():
+        calls["courses"] += 1
+        return [{"id": 58776, "fullname": "B5.3 Unternehmenssoftware", "shortname": "USWS"}]
+
+    async def fake_deadlines(course_id):
+        calls["deadlines"] += 1
+        return {
+            "course_id": int(course_id),
+            "deadlines": [{"name": "Submission Presentation 3", "due_date": "2026-07-05T21:59:00+00:00"}],
+        }
+
+    monkeypatch.setattr(moodle_context.time, "monotonic", lambda: current_time["value"])
+    monkeypatch.setattr(moodle_context.moodle_service, "get_moodle_courses", fake_courses)
+    monkeypatch.setattr(moodle_context.moodle_service, "get_moodle_course_deadlines", fake_deadlines)
+
+    await moodle_context.get_moodle_context_for_message("What are my upcoming Moodle deadlines?")
+    current_time["value"] += moodle_context._MOODLE_CACHE_TTL_SECONDS + 1
+    await moodle_context.get_moodle_context_for_message("What are my upcoming Moodle deadlines?")
+
+    assert calls == {"courses": 2, "deadlines": 2}
+
+
+@pytest.mark.asyncio
+async def test_moodle_deadline_flow_returns_clear_error_when_deadline_api_fails(monkeypatch):
+    async def fake_courses():
+        return [{"id": 58776, "fullname": "B5.3 Unternehmenssoftware", "shortname": "USWS"}]
+
+    async def fake_deadlines(_course_id):
+        raise moodle_context.moodle_service.MoodleError("Moodle nicht erreichbar")
+
+    monkeypatch.setattr(moodle_context.moodle_service, "get_moodle_courses", fake_courses)
+    monkeypatch.setattr(moodle_context.moodle_service, "get_moodle_course_deadlines", fake_deadlines)
+
+    result = await moodle_context.get_moodle_context_for_message("What are my upcoming Moodle deadlines?")
+
+    assert result == "Moodle-Deadlines konnten nicht geladen werden: Moodle nicht erreichbar"
 
 
 @pytest.mark.asyncio
@@ -371,6 +582,19 @@ async def test_semester_5_filtering_excludes_webtechnologien(semester_5_moodle):
     assert "B5.3 Unternehmenssoftware" in result
     assert "PRODW/LOG-230389-1" in result
     assert "PRODW/LOG-230106-9" in result
+    assert "Webtechnologien" not in result
+    assert "40001" not in result
+
+
+@pytest.mark.asyncio
+async def test_english_ordinal_semester_course_filtering(semester_5_moodle):
+    result = await moodle_context.get_moodle_context_for_message(
+        "Which courses belong to my 5th semester?"
+    )
+
+    assert "Moodle-Kurse fuer Semester 5" in result
+    assert "AWE Life-Hacking" in result
+    assert "B5.3 Unternehmenssoftware" in result
     assert "Webtechnologien" not in result
     assert "40001" not in result
 

@@ -14,6 +14,7 @@ auf — so "reden die Agents miteinander".
 from __future__ import annotations
 
 import logging
+import re
 
 from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage
@@ -68,6 +69,15 @@ _MOODLE_CONTEXT_KEYWORDS = (
     "moodle materials",
 )
 
+_MOODLE_COURSE_CONTEXT_PATTERNS = (
+    "which courses",
+    "my courses",
+    "semester 5",
+    "5th semester",
+    "sose 2026",
+    "sose2026",
+)
+
 _SELECTED_MOODLE_MATERIAL_KEYWORDS = (
     "session",
     "slides",
@@ -82,9 +92,42 @@ _SELECTED_MOODLE_MATERIAL_KEYWORDS = (
 )
 
 
-def _is_explicit_moodle_context_request(message: str) -> bool:
+def should_route_to_moodle_context(message: str) -> bool:
+    """Return True for deterministic Moodle queries that do not need an LLM."""
     text = (message or "").lower()
-    return any(keyword in text for keyword in _MOODLE_CONTEXT_KEYWORDS)
+    if any(keyword in text for keyword in _MOODLE_CONTEXT_KEYWORDS):
+        return True
+    return _is_deterministic_moodle_course_request(text)
+
+
+def _is_explicit_moodle_context_request(message: str) -> bool:
+    return should_route_to_moodle_context(message)
+
+
+def _is_deterministic_moodle_course_request(text: str) -> bool:
+    has_course_word = any(
+        word in text
+        for word in (
+            "course",
+            "courses",
+            "kurs",
+            "kurse",
+            "module",
+            "modules",
+        )
+    )
+    has_semester_hint = bool(
+        re.search(r"\b(?:semester|sem)\s*[1-6]\b", text)
+        or re.search(r"\b[1-6](?:st|nd|rd|th|\.)?\s*semester\b", text)
+        or "sose 2026" in text
+        or "sose2026" in text
+    )
+
+    if has_course_word and has_semester_hint:
+        return True
+
+    has_course_listing_phrase = any(pattern in text for pattern in _MOODLE_COURSE_CONTEXT_PATTERNS)
+    return has_course_listing_phrase and has_semester_hint
 
 
 def _iter_moodle_context_labels(moodle_context: dict | None):

@@ -22,7 +22,11 @@ from app.agents.base import extract_text_output, get_llm
 from app.models.academic_event import AcademicEvent
 from app.models.calendar_event import CalendarEvent
 from app.models.grade import Grade
-from app.services.moodle_context_service import get_moodle_deadlines_context, get_next_moodle_deadline_context, get_moodle_courses_context
+from app.services.moodle_context_service import (
+    get_moodle_courses_context,
+    get_moodle_deadlines_context,
+    get_upcoming_moodle_deadlines_context,
+)
 from app.services.planner_service import get_event_priority
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,140 @@ Kernregeln:
 Antworte auf Deutsch mit klarer Struktur (Abschnitte und Aufzählungen).
 Falls keine Daten vorhanden: erkläre was der Studierende im Planner/Kalender erfassen soll.
 """.strip()
+
+
+def _message_role(msg) -> str:
+    role = getattr(msg, "type", None) or getattr(msg, "role", None)
+    if role:
+        return str(role).lower()
+    class_name = msg.__class__.__name__.lower()
+    if "tool" in class_name:
+        return "tool"
+    if "ai" in class_name or "assistant" in class_name:
+        return "ai"
+    return class_name
+
+
+def _parse_json_payload(value: str):
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _looks_like_raw_json(value: str) -> bool:
+    text = (value or "").strip()
+    return (text.startswith("[") and text.endswith("]")) or (text.startswith("{") and text.endswith("}"))
+
+
+def _grade_value(item: dict) -> float | None:
+    grade = item.get("grade")
+    if not grade:
+        return None
+    try:
+        return float(str(grade).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _format_grade_focus(payload: list[dict]) -> str:
+    graded = [item for item in payload if isinstance(item, dict) and _grade_value(item) is not None]
+    if not graded:
+        return ""
+
+    focus = sorted(
+        [item for item in graded if item.get("needs_attention") or not item.get("good")],
+        key=lambda item: _grade_value(item) or 0,
+        reverse=True,
+    )
+    if not focus:
+        focus = sorted(graded, key=lambda item: _grade_value(item) or 0, reverse=True)[:3]
+    else:
+        focus = focus[:4]
+
+    strong = sorted(
+        [item for item in graded if item.get("good")],
+        key=lambda item: _grade_value(item) or 99,
+    )[:3]
+
+    lines = ["Diese Woche solltest du dich auf die Faecher mit dem groessten Verbesserungspotenzial konzentrieren:"]
+    for idx, item in enumerate(focus, start=1):
+        semester = f", {item['semester']}" if item.get("semester") else ""
+        lines.append(f"{idx}. {item['course']} (Note {item['grade']}{semester})")
+
+    lines.extend(
+        [
+            "",
+            "Vorschlag fuer deinen Fokus:",
+            "- Plane zuerst 2-3 konzentrierte Lernbloecke fuer die oben genannten Faecher.",
+            "- Wiederhole danach kurz die starken Faecher, damit der Stand stabil bleibt.",
+            "- Wenn eine konkrete Deadline oder Pruefung naeherrueckt, priorisiere dieses Fach zuerst.",
+        ]
+    )
+    if strong:
+        strong_courses = ", ".join(str(item["course"]) for item in strong)
+        lines.append(f"Starke Faecher wie {strong_courses} reichen diese Woche eher fuer kurze Wiederholung.")
+    return "\n".join(lines)
+
+
+def _format_deadline_focus(payload: list[dict]) -> str:
+    deadlines = [
+        item for item in payload
+        if isinstance(item, dict) and item.get("title") and (item.get("date") or item.get("days_remaining") is not None)
+    ]
+    if not deadlines:
+        return ""
+    lines = ["Diese Woche solltest du dich an den naechsten Terminen orientieren:"]
+    for idx, item in enumerate(deadlines[:5], start=1):
+        course = f" - {item['course']}" if item.get("course") else ""
+        days = f", noch {item['days_remaining']} Tage" if item.get("days_remaining") is not None else ""
+        lines.append(f"{idx}. {item['title']}{course}: {item.get('date', 'kein Datum')}{days}")
+    lines.extend(
+        [
+            "",
+            "Arbeite zuerst an den Terminen mit hoher Prioritaet und blocke dafuer feste Lernzeiten im Kalender.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_schedule_focus(payload: list[dict]) -> str:
+    slots = [item for item in payload if isinstance(item, dict) and item.get("blocked")]
+    if not slots:
+        return ""
+    lines = ["Dein Stundenplan blockiert in den naechsten Tagen diese Zeiten:"]
+    for item in slots[:5]:
+        lines.append(
+            f"- {item.get('date', 'Datum offen')}, {item.get('start', '?')}-{item.get('end', '?')}: "
+            f"{item.get('title', 'Termin')}"
+        )
+    lines.append("\nPlane Lernbloecke um diese Zeiten herum, nicht parallel dazu.")
+    return "\n".join(lines)
+
+
+def _format_internal_payload(payload) -> str:
+    if isinstance(payload, list):
+        for formatter in (_format_grade_focus, _format_deadline_focus, _format_schedule_focus):
+            formatted = formatter(payload)
+            if formatted:
+                return formatted
+    return ""
+
+
+def _format_planner_tool_fallback(agent_result: dict) -> str:
+    for msg in reversed(agent_result.get("messages", [])):
+        if _message_role(msg) != "tool":
+            continue
+        payload = _parse_json_payload(getattr(msg, "content", ""))
+        formatted = _format_internal_payload(payload)
+        if formatted:
+            return formatted
+    return ""
+
+
+def _format_raw_json_fallback(text: str) -> str:
+    payload = _parse_json_payload(text)
+    return _format_internal_payload(payload)
 
 
 def create_planner_agent(db: AsyncSession):
@@ -164,15 +302,15 @@ def create_planner_agent(db: AsyncSession):
 
     @tool
     async def get_moodle_deadlines(course_name: str = "") -> str:
-        """Ruft Moodle-Abgabefristen ab. Ohne Kursname: nächste fällige Abgabe über alle Kurse.
+        """Ruft Moodle-Abgabefristen ab. Ohne Kursname: alle anstehenden Abgaben über alle Kurse.
         Mit Kursname: alle Abgaben für diesen Kurs (offen und vergangen).
 
         Args:
-            course_name: Kursname oder leer für die nächste globale Deadline.
+            course_name: Kursname oder leer für alle anstehenden globalen Deadlines.
         """
         if course_name.strip():
             return await get_moodle_deadlines_context(course_name)
-        return await get_next_moodle_deadline_context()
+        return await get_upcoming_moodle_deadlines_context()
 
     @tool
     async def get_moodle_courses() -> str:
@@ -193,7 +331,14 @@ async def run_planner_agent(message: str, db: AsyncSession) -> str:
     agent = create_planner_agent(db)
     try:
         result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
-        return extract_text_output(result) or "Der Lernplan konnte nicht erstellt werden."
+        answer = extract_text_output(result)
+        if answer and not _looks_like_raw_json(answer):
+            return answer
+        if answer:
+            formatted = _format_raw_json_fallback(answer)
+            if formatted:
+                return formatted
+        return _format_planner_tool_fallback(result) or "Der Lernplan konnte nicht erstellt werden."
     except Exception as exc:
         logger.error("PlannerAgent fehlgeschlagen: %s", exc)
         return "Der Lernplan-Agent ist momentan nicht erreichbar. Bitte später erneut versuchen."

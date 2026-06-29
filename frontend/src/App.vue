@@ -331,7 +331,14 @@
               </div>
               <div class="cal-period-row">
                 <span class="cal-period">{{ calPeriodLabel }}</span>
-                <button v-if="!calShowAddForm" class="cal-add-btn" @click.stop="calShowAddForm = true">＋ Eigener Termin</button>
+                <div class="cal-period-actions">
+                  <button
+                    v-if="hasMoodleDeadlineEvents"
+                    class="cal-delete-moodle-btn"
+                    @click.stop="deleteMoodleDeadlineEvents"
+                  >Moodle-Deadlines löschen</button>
+                  <button v-if="!calShowAddForm" class="cal-add-btn" @click.stop="calShowAddForm = true">＋ Eigener Termin</button>
+                </div>
               </div>
 
               <!-- Eigenen Termin hinzufügen -->
@@ -354,6 +361,7 @@
                 <span class="cal-legend-item"><span class="cal-dot cal-dot--class"></span>Vorlesung</span>
                 <span class="cal-legend-item"><span class="cal-dot cal-dot--user"></span>Eigener Termin</span>
                 <span class="cal-legend-item"><span class="cal-dot cal-dot--deadline"></span>Deadline</span>
+                <span class="cal-legend-item"><span class="cal-dot cal-dot--moodle-deadline"></span>Moodle Deadline</span>
               </div>
 
               <!-- MONAT -->
@@ -416,10 +424,15 @@
                     <div class="cal-day-top">
                       <span class="cal-day-name">{{ e.title }}</span>
                       <span v-if="e.kind === 'deadline'" class="kalender-card-badge">{{ plannerTypeLabel(e.deadlineType) }}</span>
+                      <span v-else-if="e.kind === 'moodle-deadline'" class="kalender-card-badge cal-badge-moodle">Moodle Deadline</span>
                       <span v-else-if="e.kind === 'user'" class="kalender-card-badge cal-badge-user">Eigener Termin</span>
                     </div>
                     <div v-if="e.location" class="kalender-card-meta"><UiIcon name="location" fallback="📍" /> {{ e.location }}</div>
-                    <button v-if="e.kind === 'user'" class="cal-day-del" @click.stop="deleteUserEvent(e.rawId)">Termin löschen</button>
+                    <button
+                      v-if="e.kind === 'user' || e.kind === 'moodle-deadline'"
+                      class="cal-day-del"
+                      @click.stop="deleteUserEvent(e.rawId)"
+                    >{{ e.kind === 'moodle-deadline' ? 'Moodle-Deadline löschen' : 'Termin löschen' }}</button>
                   </div>
                 </div>
               </div>
@@ -1063,6 +1076,23 @@
               <span v-else class="bubble-text">{{ msg.content }}<span class="cursor">▋</span></span>
             </template>
             <span v-else class="bubble-text">{{ msg.content }}</span>
+            <div
+              v-if="msg.role === 'assistant' && msg.actions && msg.actions.length && (!loading || i < messages.length - 1)"
+              class="message-actions"
+            >
+              <span class="message-actions-label">Suggested actions</span>
+              <button
+                v-for="action in msg.actions"
+                :key="action.id"
+                type="button"
+                :class="['message-action-btn', 'message-action-btn--' + action.kind]"
+                :disabled="loading || !pendingMoodleDeadlineOffer"
+                @click.stop="handleMessageAction(msg, action.id)"
+              >
+                <UiIcon v-if="action.icon" :name="action.icon" :fallback="action.fallback || ''" />
+                {{ action.label }}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1316,6 +1346,8 @@ export default {
       userEventForm: { title: '', date: '', start: '', end: '', location: '' },
       userEventSaving: false,
       userEventStatus: null,
+      pendingMoodleDeadlineOffer: false,
+      moodleDeadlineCalendarSaving: false,
       studyPlan: '',
       studyPlanDate: '',
       studyPlanLoading: false,
@@ -1453,6 +1485,9 @@ export default {
         .filter(e => !q || e.title.toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q))
         .sort((a, b) => new Date(a.start_time) - new Date(b.start_time))
     },
+    hasMoodleDeadlineEvents() {
+      return this.calendarEvents.some(e => e.source === 'moodle' && e.category === 'Moodle Deadline')
+    },
     sortedGradesCourses() {
       if (!this.gradesData?.courses) return []
       const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
@@ -1562,11 +1597,13 @@ export default {
 
       for (const e of this.calendarEvents) {
         const d = new Date(e.start_time)
+        const isMoodleDeadline = e.source === 'moodle' && e.category === 'Moodle Deadline'
         push(this._dayKey(d), {
           id: 'c' + e.id,
           rawId: e.id,
-          kind: e.source === 'user' ? 'user' : 'class',
-          title: e.source === 'user' ? e.title : this.parseCourseName(e.title),
+          kind: isMoodleDeadline ? 'moodle-deadline' : (e.source === 'user' ? 'user' : 'class'),
+          title: isMoodleDeadline || e.source === 'user' ? e.title : this.parseCourseName(e.title),
+          deadlineType: e.category,
           start_time: e.start_time,
           end_time: e.end_time,
           location: e.location,
@@ -1877,6 +1914,8 @@ export default {
       try {
         this.messages = JSON.parse(localStorage.getItem('chat:' + this.chatId + ':messages') || '[]')
       } catch { this.messages = [] }
+      const lastAssistant = [...this.messages].reverse().find(m => m.role === 'assistant')
+      this.updatePendingMoodleDeadlineOffer(lastAssistant?.content || '', lastAssistant || null)
     },
     saveMessages() {
       try {
@@ -2180,6 +2219,28 @@ export default {
       const lower = text.toLowerCase()
       return keywords.some(kw => lower.includes(kw))
     },
+    isDeterministicMoodleCourseQuestion(text) {
+      const lower = text.toLowerCase()
+      const hasCourseWord = [
+        'course',
+        'courses',
+        'kurs',
+        'kurse',
+        'module',
+        'modules',
+      ].some(kw => lower.includes(kw))
+      const hasSemesterHint =
+        /\b(?:semester|sem)\s*[1-6]\b/.test(lower) ||
+        /\b[1-6](?:st|nd|rd|th|\.)?\s*semester\b/.test(lower) ||
+        lower.includes('sose 2026') ||
+        lower.includes('sose2026')
+
+      if (hasCourseWord && hasSemesterHint) return true
+      return (
+        ['which courses', 'my courses', 'semester 5', '5th semester', 'sose 2026', 'sose2026']
+          .some(kw => lower.includes(kw)) && hasSemesterHint
+      )
+    },
     buildMoodleChatContext() {
       if (!this.selectedMoodleCourse) return null
       return {
@@ -2204,6 +2265,7 @@ export default {
     isMoodlePromptQuestion(text, moodleContext = null) {
       const lower = text.toLowerCase()
       if (lower.includes('moodle')) return true
+      if (this.isDeterministicMoodleCourseQuestion(text)) return true
       if (!moodleContext) return false
       const materialKeywords = [
         'session', 'slides', 'slide', 'folie', 'folien', 'ppt', 'pptx',
@@ -2240,6 +2302,20 @@ export default {
       this.messages.push({ role: 'user', content: userPrompt })
       this.messages.push({ role: 'assistant', content: '' })
       this.loading = true
+
+      if (this.isMoodleDeadlineCalendarConfirmation(userPrompt)) {
+        await this.addPendingMoodleDeadlinesToCalendar()
+        return
+      }
+      if (this.isMoodleDeadlineCalendarDecline(userPrompt)) {
+        this.pendingMoodleDeadlineOffer = false
+        this.clearMoodleDeadlineActions()
+        this.messages[this.messages.length - 1].content = 'Okay, I will leave them out of your calendar.'
+        this.loading = false
+        this.saveMessages()
+        return
+      }
+
       this.maybeNameChat(userPrompt)
       const moodleContext = this.buildMoodleChatContext()
       const usePromptChat = this.isMoodlePromptQuestion(userPrompt, moodleContext)
@@ -2309,6 +2385,7 @@ export default {
         this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
       } finally {
         this.loading = false
+        this.updatePendingMoodleDeadlineOffer(this.messages[this.messages.length - 1].content)
         this.saveMessages()
       }
     },
@@ -2339,6 +2416,95 @@ export default {
         }
       } catch {
         // Backend nicht erreichbar beim Start — kein Fehler anzeigen
+      }
+    },
+    isMoodleDeadlineOfferContent(content) {
+      return (
+        typeof content === 'string' &&
+        content.includes('Do you want me to add these deadlines to your calendar?') &&
+        content.includes('Course:') &&
+        content.includes('Due:')
+      )
+    },
+    clearMoodleDeadlineActions() {
+      for (const message of this.messages) {
+        if (!message.actions) continue
+        message.actions = message.actions.filter(action => !String(action.id || '').startsWith('moodle-deadlines-'))
+        if (message.actions.length === 0) delete message.actions
+      }
+    },
+    attachMoodleDeadlineActions(message) {
+      if (!message) return
+      message.actions = [
+        { id: 'moodle-deadlines-add-all', label: 'Yes, add all to my calendar', kind: 'primary', icon: 'check', fallback: '✓' },
+        { id: 'moodle-deadlines-decline', label: 'No, thanks', kind: 'secondary', icon: 'cross', fallback: '×' },
+      ]
+    },
+    updatePendingMoodleDeadlineOffer(content, targetMessage = null) {
+      this.pendingMoodleDeadlineOffer = this.isMoodleDeadlineOfferContent(content)
+      this.clearMoodleDeadlineActions()
+      if (this.pendingMoodleDeadlineOffer) {
+        this.attachMoodleDeadlineActions(targetMessage || this.messages[this.messages.length - 1])
+      }
+    },
+    isMoodleDeadlineCalendarConfirmation(text) {
+      if (!this.pendingMoodleDeadlineOffer) return false
+      return /^(yes|y|ja|jep|yeah|sure|ok|okay|please|bitte|gern|gerne)\b/i.test(text.trim())
+    },
+    isMoodleDeadlineCalendarDecline(text) {
+      if (!this.pendingMoodleDeadlineOffer) return false
+      return /^(no|n|nein|nope|nicht|lass|cancel|abbrechen)\b/i.test(text.trim())
+    },
+    async handleMessageAction(_message, actionId) {
+      if (this.loading || !this.pendingMoodleDeadlineOffer) return
+      if (actionId === 'moodle-deadlines-add-all') {
+        this.messages.push({ role: 'user', content: 'Yes, add all to my calendar' })
+        this.messages.push({ role: 'assistant', content: '' })
+        this.loading = true
+        await this.$nextTick()
+        this.scrollToBottom()
+        await this.addPendingMoodleDeadlinesToCalendar()
+        return
+      }
+      if (actionId === 'moodle-deadlines-decline') {
+        this.messages.push({ role: 'user', content: 'No, thanks' })
+        this.messages.push({ role: 'assistant', content: 'Okay, I will leave them out of your calendar.' })
+        this.pendingMoodleDeadlineOffer = false
+        this.clearMoodleDeadlineActions()
+        this.saveMessages()
+        await this.$nextTick()
+        this.scrollToBottom()
+      }
+    },
+    async addPendingMoodleDeadlinesToCalendar() {
+      this.moodleDeadlineCalendarSaving = true
+      try {
+        const res = await fetch('/api/calendar/moodle-deadlines', { method: 'POST' })
+        const data = await res.json().catch(() => ({}))
+        if (res.ok) {
+          await this.fetchCalendarEvents()
+          const created = data.created || 0
+          const existing = data.existing || 0
+          const detail = existing
+            ? ` ${existing} deadline${existing === 1 ? ' was' : 's were'} already in your calendar.`
+            : ''
+          this.messages[this.messages.length - 1].content =
+            created > 0
+              ? `Added ${created} Moodle deadline${created === 1 ? '' : 's'} to your calendar.${detail}`
+              : `No new Moodle deadlines were added.${detail}`
+          this.messages[this.messages.length - 1].kind = 'success'
+          this.pendingMoodleDeadlineOffer = false
+          this.clearMoodleDeadlineActions()
+        } else {
+          this.messages[this.messages.length - 1].content =
+            data.detail || 'I could not add the Moodle deadlines to your calendar.'
+        }
+      } catch {
+        this.messages[this.messages.length - 1].content = 'Backend nicht erreichbar.'
+      } finally {
+        this.moodleDeadlineCalendarSaving = false
+        this.loading = false
+        this.saveMessages()
       }
     },
     async addUserEvent() {
@@ -2377,6 +2543,13 @@ export default {
       if (!confirm('Diesen Termin löschen?')) return
       try {
         const res = await fetch('/api/calendar/events/' + id, { method: 'DELETE' })
+        if (res.ok) await this.fetchCalendarEvents()
+      } catch { /* silent */ }
+    },
+    async deleteMoodleDeadlineEvents() {
+      if (!confirm('Alle Moodle-Deadlines aus dem Kalender löschen?')) return
+      try {
+        const res = await fetch('/api/calendar/moodle-deadlines', { method: 'DELETE' })
         if (res.ok) await this.fetchCalendarEvents()
       } catch { /* silent */ }
     },
@@ -3982,6 +4155,70 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
   box-shadow: var(--shadow);
+}
+
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.message-actions-label {
+  width: 100%;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+}
+
+.message-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.message-action-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.message-action-btn--primary {
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.message-action-btn--primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.message-action-btn--primary .ui-icon {
+  filter: brightness(0) invert(1);
+}
+
+.message-action-btn--secondary {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.message-action-btn--secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 /* MARKDOWN STYLES */
@@ -5739,8 +5976,11 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 
 /* ── Kalender: eigene Termine + Legende + Event-Arten ────────────── */
 .cal-period-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.cal-period-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .cal-add-btn { padding: 5px 11px; border: 1px solid var(--primary); background: var(--surface); color: var(--primary); border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .cal-add-btn:hover { background: var(--primary-dim); }
+.cal-delete-moodle-btn { padding: 5px 11px; border: 1px solid #f59e0b; background: var(--surface); color: #b45309; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.cal-delete-moodle-btn:hover { background: #fffbeb; }
 .cal-add-form { display: flex; flex-direction: column; gap: 6px; padding: 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-hover); }
 .cal-add-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; }
 .cal-add-input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12.5px; background: var(--surface); color: var(--text); }
@@ -5755,26 +5995,34 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .cal-dot--class { background: #8b5cf6; }
 .cal-dot--user { background: #0ea5e9; }
 .cal-dot--deadline { background: #ef4444; }
+.cal-dot--moodle-deadline { background: #f59e0b; }
 
 /* Event-Farben je Art */
 .cal-chip--class { background: var(--primary-dim); color: var(--primary); border-left: 3px solid #8b5cf6; }
 .cal-chip--user { background: #e0f2fe; color: #0369a1; border-left: 3px solid #0ea5e9; }
 .cal-chip--deadline { background: #fee2e2; color: #b91c1c; border-left: 3px solid #ef4444; font-weight: 700; }
+.cal-chip--moodle-deadline { background: #fef3c7; color: #92400e; border-left: 3px solid #f59e0b; font-weight: 700; }
 .dark .cal-chip--user { background: #0c2a3a; color: #7dd3fc; }
 .dark .cal-chip--deadline { background: #2d1515; color: #fca5a5; }
+.dark .cal-chip--moodle-deadline { background: #2a2410; color: #fbbf24; }
 
 .cal-event--class .cal-event-time { color: var(--primary); }
 .cal-event--user { background: #e0f2fe; border-color: #bae6fd; }
 .cal-event--user .cal-event-time { color: #0369a1; }
 .cal-event--deadline { background: #fee2e2; border-color: #fecaca; }
 .cal-event--deadline .cal-event-time { color: #b91c1c; }
+.cal-event--moodle-deadline { background: #fef3c7; border-color: #fde68a; }
+.cal-event--moodle-deadline .cal-event-time { color: #92400e; }
 .dark .cal-event--user { background: #0c2a3a; }
 .dark .cal-event--deadline { background: #2d1515; }
+.dark .cal-event--moodle-deadline { background: #2a2410; }
 
 .cal-day-event--user { border-left-color: #0ea5e9; }
 .cal-day-event--deadline { border-left-color: #ef4444; }
+.cal-day-event--moodle-deadline { border-left-color: #f59e0b; }
 .cal-day-allday { font-size: 12px; color: var(--text-muted); }
 .cal-badge-user { background: #e0f2fe; color: #0369a1; }
+.cal-badge-moodle { background: #fef3c7; color: #92400e; }
 .cal-day-del { margin-top: 4px; align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; padding: 5px 10px; color: #dc2626; cursor: pointer; }
 .cal-day-del:hover { background: #fee2e2; }
 

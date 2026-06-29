@@ -9,6 +9,9 @@ or specialized agents.
 from __future__ import annotations
 
 import re
+import asyncio
+import copy
+import time
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -16,6 +19,10 @@ from zoneinfo import ZoneInfo
 from app.services import moodle_service
 
 _TZ_BERLIN = ZoneInfo("Europe/Berlin")
+_MOODLE_CACHE_TTL_SECONDS = 10 * 60
+_MOODLE_API_TIMEOUT_SECONDS = 15.0
+_COURSES_CACHE: tuple[float, list[dict]] | None = None
+_DEADLINES_CACHE: dict[str, tuple[float, dict]] = {}
 
 _SEMESTER_COURSE_IDS = {
     5: {"60415", "59507", "58776", "58690"},
@@ -88,6 +95,60 @@ def _not_configured_message() -> str:
     return "Moodle ist nicht verbunden (kein MOODLE_TOKEN konfiguriert)."
 
 
+def clear_moodle_deadline_cache() -> None:
+    """Clear the short-lived Moodle deadline cache.
+
+    Used by tests and available for future explicit refresh actions. Calendar
+    add/delete operations intentionally do not call this, because they do not
+    mutate Moodle itself.
+    """
+    global _COURSES_CACHE
+    _COURSES_CACHE = None
+    _DEADLINES_CACHE.clear()
+
+
+def _cache_is_fresh(expires_at: float) -> bool:
+    return time.monotonic() < expires_at
+
+
+async def _with_moodle_timeout(awaitable, label: str):
+    try:
+        return await asyncio.wait_for(awaitable, timeout=_MOODLE_API_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise moodle_service.MoodleError(f"{label} hat zu lange gedauert. Bitte versuche es gleich erneut.") from exc
+
+
+async def _get_cached_moodle_courses() -> list[dict]:
+    global _COURSES_CACHE
+    if _COURSES_CACHE is not None:
+        expires_at, courses = _COURSES_CACHE
+        if _cache_is_fresh(expires_at):
+            return copy.deepcopy(courses)
+
+    courses = await _with_moodle_timeout(
+        moodle_service.get_moodle_courses(),
+        "Moodle-Kurse laden",
+    )
+    _COURSES_CACHE = (time.monotonic() + _MOODLE_CACHE_TTL_SECONDS, copy.deepcopy(courses))
+    return copy.deepcopy(courses)
+
+
+async def _get_cached_moodle_course_deadlines(course_id: str) -> dict:
+    key = str(course_id)
+    cached = _DEADLINES_CACHE.get(key)
+    if cached is not None:
+        expires_at, result = cached
+        if _cache_is_fresh(expires_at):
+            return copy.deepcopy(result)
+
+    result = await _with_moodle_timeout(
+        moodle_service.get_moodle_course_deadlines(key),
+        f"Moodle-Deadlines fuer Kurs {key} laden",
+    )
+    _DEADLINES_CACHE[key] = (time.monotonic() + _MOODLE_CACHE_TTL_SECONDS, copy.deepcopy(result))
+    return copy.deepcopy(result)
+
+
 def _extract_course_id(value: str | int | None) -> str | None:
     if value is None:
         return None
@@ -113,14 +174,15 @@ def _course_label(course: dict) -> str:
 
 def _short_course_name(course: dict) -> str:
     name = course.get("fullname") or course.get("shortname") or "Moodle-Kurs"
-    return str(name).split(" - ", 1)[0].strip()
+    short = str(name).split(" - ", 1)[0].strip()
+    return re.sub(r"\s+\((?:SL|PCÜ|PCU|VL|UE|Ü|UEB|PR|SE)\)$", "", short).strip()
 
 
 async def _load_courses() -> list[dict] | str:
     if not moodle_service.is_configured():
         return _not_configured_message()
     try:
-        return await moodle_service.get_moodle_courses()
+        return await _get_cached_moodle_courses()
     except moodle_service.MoodleError as exc:
         return f"Moodle-Kurse konnten nicht geladen werden: {exc}"
 
@@ -194,12 +256,21 @@ def _filter_semester_5_courses(courses: list[dict]) -> list[dict]:
 
 def _extract_requested_semester(value: str | int | None) -> int | None:
     text = str(value or "").lower()
-    match = re.search(r"\b(?:semester|sem)\s*(\d)\b|\b(\d)\.?\s*semester\b", text)
+    match = re.search(
+        r"\b(?:semester|sem)\s*(\d)\b|\b(\d)(?:st|nd|rd|th|\.)?\s*semester\b",
+        text,
+    )
     if match:
         number = match.group(1) or match.group(2)
         if number:
             return int(number)
     ordinal_map = {
+        "first semester": 1,
+        "second semester": 2,
+        "third semester": 3,
+        "fourth semester": 4,
+        "fifth semester": 5,
+        "sixth semester": 6,
         "erstes semester": 1,
         "zweites semester": 2,
         "drittes semester": 3,
@@ -298,6 +369,10 @@ def _deadline_sort_key(deadline: dict) -> datetime:
     return _parse_due_date(deadline.get("due_date")) or datetime.max.replace(tzinfo=timezone.utc)
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 async def get_moodle_courses_context(course_id_or_course_name: str | int | None = None) -> str:
     """Return a compact list of enrolled Moodle courses."""
     courses = await _load_courses()
@@ -330,13 +405,17 @@ async def get_next_moodle_deadline_context(
     matched = _match_course(courses, explicit_course)
     selected_courses = [matched] if matched else courses
     candidates: list[tuple[datetime, dict, dict]] = []
+    errors: list[str] = []
+    loaded_any = False
 
     for course in selected_courses:
         if course is None:
             continue
         try:
-            result = await moodle_service.get_moodle_course_deadlines(str(course.get("id")))
-        except moodle_service.MoodleError:
+            result = await _get_cached_moodle_course_deadlines(str(course.get("id")))
+            loaded_any = True
+        except moodle_service.MoodleError as exc:
+            errors.append(str(exc))
             continue
         for deadline in result.get("deadlines", []) if isinstance(result, dict) else []:
             due = _parse_due_date(deadline.get("due_date"))
@@ -345,11 +424,13 @@ async def get_next_moodle_deadline_context(
             candidates.append((due, deadline, course))
 
     if not candidates:
+        if not loaded_any and errors:
+            return f"Moodle-Deadlines konnten nicht geladen werden: {errors[0]}"
         if matched:
             return f"Keine Moodle-Aufgaben fuer {matched.get('fullname')} gefunden."
         return "Keine Moodle-Aufgaben gefunden."
 
-    now = datetime.now(timezone.utc)
+    now = _now_utc()
     future = [candidate for candidate in candidates if candidate[0] >= now]
     if not future:
         return "Keine anstehenden Moodle-Aufgaben gefunden."
@@ -361,6 +442,88 @@ async def get_next_moodle_deadline_context(
         f"Kurs: {_short_course_name(course)}\n"
         f"Datum: {_format_due_date(deadline.get('due_date'))}"
     )
+
+
+async def get_upcoming_moodle_deadlines(
+    course_id_or_course_name: str | int | None = None,
+) -> list[dict]:
+    """Return all upcoming live Moodle deadlines sorted by due date."""
+    courses = await _load_courses()
+    if isinstance(courses, str):
+        raise moodle_service.MoodleError(courses)
+    if not courses:
+        return []
+
+    explicit_course = _extract_explicit_course_reference(course_id_or_course_name)
+    matched = _match_course(courses, explicit_course)
+    selected_courses = [matched] if matched else courses
+    now = _now_utc()
+    upcoming: list[dict] = []
+    errors: list[str] = []
+    loaded_any = False
+
+    for course in selected_courses:
+        if course is None:
+            continue
+        try:
+            result = await _get_cached_moodle_course_deadlines(str(course.get("id")))
+            loaded_any = True
+        except moodle_service.MoodleError as exc:
+            errors.append(str(exc))
+            continue
+        deadlines = result.get("deadlines", []) if isinstance(result, dict) else []
+        for deadline in deadlines:
+            due = _parse_due_date(deadline.get("due_date"))
+            if due is None or due < now:
+                continue
+            upcoming.append(
+                {
+                    "title": deadline.get("name") or "Unbenannte Moodle-Aufgabe",
+                    "course": _short_course_name(course),
+                    "course_id": str(course.get("id")),
+                    "due_date": due.isoformat(),
+                    "type": "Moodle Deadline",
+                    "moodle_type": deadline.get("type") or deadline.get("modname") or "assignment",
+                    "status": deadline.get("status"),
+                    "url": deadline.get("open_url") or deadline.get("url"),
+                }
+            )
+
+    if not loaded_any and errors:
+        raise moodle_service.MoodleError(f"Moodle-Deadlines konnten nicht geladen werden: {errors[0]}")
+
+    return sorted(
+        upcoming,
+        key=lambda item: _parse_due_date(item["due_date"]) or datetime.max.replace(tzinfo=timezone.utc),
+    )
+
+
+async def get_upcoming_moodle_deadlines_context(
+    course_id_or_course_name: str | int | None = None,
+) -> str:
+    """Return all upcoming Moodle deadlines, optionally restricted to one course."""
+    try:
+        deadlines = await get_upcoming_moodle_deadlines(course_id_or_course_name)
+    except moodle_service.MoodleError as exc:
+        return str(exc)
+
+    if not deadlines:
+        if _extract_explicit_course_reference(course_id_or_course_name):
+            return "Keine anstehenden Moodle-Deadlines fuer diesen Kurs gefunden."
+        return "Keine anstehenden Moodle-Deadlines gefunden."
+
+    lines = ["Upcoming Moodle deadlines:"]
+    for idx, deadline in enumerate(deadlines, start=1):
+        lines.extend(
+            [
+                "",
+                f"{idx}. {deadline['title']}",
+                f"   Course: {deadline['course']}",
+                f"   Due: {_format_due_date(deadline['due_date'])}",
+            ]
+        )
+    lines.extend(["", "Do you want me to add these deadlines to your calendar?"])
+    return "\n".join(lines)
 
 
 async def get_moodle_deadlines_context(course_id_or_course_name: str | int) -> str:
@@ -377,7 +540,7 @@ async def get_moodle_deadlines_context(course_id_or_course_name: str | int) -> s
         return "Kein passender Moodle-Kurs gefunden. Bitte gib Kursname oder Course ID an."
 
     try:
-        result = await moodle_service.get_moodle_course_deadlines(str(matched.get("id")))
+        result = await _get_cached_moodle_course_deadlines(str(matched.get("id")))
     except moodle_service.MoodleError as exc:
         return f"Moodle-Deadlines konnten nicht geladen werden: {exc}"
 
@@ -385,7 +548,7 @@ async def get_moodle_deadlines_context(course_id_or_course_name: str | int) -> s
     if not deadlines:
         return f"Keine Moodle-Deadlines fuer {_short_course_name(matched)} gefunden."
 
-    now = datetime.now(timezone.utc)
+    now = _now_utc()
     past = []
     upcoming = []
     for deadline in deadlines:
@@ -514,6 +677,8 @@ async def get_moodle_context_for_message(message: str) -> str:
         wants_next = any(term in text for term in ("nächste", "naechste", "next"))
         if _extract_explicit_course_reference(message) and not wants_next:
             return await get_moodle_deadlines_context(message)
+        if not wants_next:
+            return await get_upcoming_moodle_deadlines_context(message)
         return await get_next_moodle_deadline_context(message)
     if "overview" in text or "erklaer" in text or "erklär" in text or "kurs" in text and "moodle" in text:
         return await get_moodle_course_context(message)

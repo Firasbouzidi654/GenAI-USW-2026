@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from sqlalchemy import select
@@ -158,7 +158,7 @@ def create_curriculum_agent(db: AsyncSession):
     return create_agent(
         model=llm,
         tools=[modules_by_semester, list_all_modules, module_details],
-        system_prompt=_SYSTEM_PROMPT,
+        prompt=_SYSTEM_PROMPT,
     )
 
 

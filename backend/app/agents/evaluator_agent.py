@@ -10,7 +10,7 @@ import json
 import logging
 from collections import defaultdict
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from sqlalchemy import select
@@ -22,6 +22,7 @@ from app.models.curriculum import CurriculumModule
 from app.models.quiz import Quiz
 from app.models.quiz_attempt import QuizAttempt
 from app.models.quiz_question import QuizQuestion
+from app.services.moodle_context_service import get_moodle_grades_context
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ Du hast Zugriff auf:
 - Fragetyp-Analyse (Multiple-Choice vs. Wahr/Falsch)
 - Letzte Quiz-Versuche mit Ergebnissen
 - Das Modulhandbuch (Vorgängermodule): zu jedem Modul, auf welchen Modulen es aufbaut
+- Moodle-Noten aus laufenden Kursen (get_moodle_grades) — ergänzen das Bild
 
 Vorgehen:
 1. Rufe ALLE relevanten Tools auf, um ein vollständiges Bild zu bekommen
@@ -262,6 +264,16 @@ def create_evaluator_agent(db: AsyncSession):
             return "Kein Modulhandbuch hinterlegt."
         return "Module im Modulhandbuch:\n" + "\n".join(f"- {m.name}" for m in modules)
 
+    @tool
+    async def get_moodle_grades(course_name: str = "") -> str:
+        """Holt Moodle-Noten aus laufenden Kursen als zusätzliche Datenquelle.
+        Ohne Kursname: alle Kurse. Mit Kursname: nur dieser Kurs.
+
+        Args:
+            course_name: Kursname oder leer für alle Kurse.
+        """
+        return await get_moodle_grades_context(course_name or None)
+
     llm = get_llm(temperature=0.3)
     return create_agent(
         model=llm,
@@ -272,8 +284,9 @@ def create_evaluator_agent(db: AsyncSession):
             get_question_type_breakdown,
             find_prerequisites,
             list_curriculum_modules,
+            get_moodle_grades,
         ],
-        system_prompt=_SYSTEM_PROMPT,
+        prompt=_SYSTEM_PROMPT,
     )
 
 

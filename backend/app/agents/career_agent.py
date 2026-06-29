@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm, run_with_model_fallback
 from app.models.grade import Grade
+from app.services.moodle_context_service import get_moodle_grades_context, get_moodle_courses_context
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,12 @@ _AGENT_SYSTEM_PROMPT = """
 Du bist ein Karriere-Agent für Studierende. Du analysierst ihr akademisches Profil
 und gibst personalisierte Karriereempfehlungen.
 
-Nutze deine Tools, um Daten zu sammeln, dann analysiere das Profil.
+Du hast Zugriff auf:
+- LSF-Noten (get_academic_transcript, get_strong_subjects, get_weak_subjects)
+- Moodle-Noten aus laufenden Kursen (get_moodle_grades) — ergänzen das LSF-Notenblatt
+- Belegte Moodle-Kurse (get_moodle_courses)
+
+Nutze alle verfügbaren Datenquellen, dann analysiere das Profil.
 Antworte auf Deutsch mit konkreten, motivierenden Empfehlungen.
 """.strip()
 
@@ -184,17 +190,37 @@ def create_career_agent(db: AsyncSession):
             logger.warning("Schwächen-Abfrage fehlgeschlagen: %s", exc)
             return "Schwächen konnten nicht ermittelt werden."
 
+    @tool
+    async def get_moodle_grades(course_name: str = "") -> str:
+        """Holt Moodle-Noten aus laufenden Kursen. Ohne Kursname: alle Kurse.
+        Mit Kursname: nur dieser Kurs.
+
+        Args:
+            course_name: Kursname oder leer für alle Kurse.
+        """
+        return await get_moodle_grades_context(course_name or None)
+
+    @tool
+    async def get_moodle_courses() -> str:
+        """Listet alle belegten Moodle-Kurse des Studierenden."""
+        return await get_moodle_courses_context()
+
     llm = get_llm(temperature=0.2)
     return create_agent(
         model=llm,
-        tools=[get_academic_transcript, get_strong_subjects, get_weak_subjects],
-        system_prompt=_AGENT_SYSTEM_PROMPT,
+        tools=[get_academic_transcript, get_strong_subjects, get_weak_subjects,
+               get_moodle_grades, get_moodle_courses],
+        prompt=_AGENT_SYSTEM_PROMPT,
     )
 
 
 # ── Öffentliche API ───────────────────────────────────────────────────────────
 
-async def get_ai_career_analysis(courses: list[dict]) -> dict:
+async def get_ai_career_analysis(
+    courses: list[dict],
+    cv_text: str | None = None,
+    quiz_topics: list[dict] | None = None,
+) -> dict:
     """Strukturierte Karriere-Analyse via LangChain Structured Output.
 
     Raises:
@@ -208,6 +234,18 @@ async def get_ai_career_analysis(courses: list[dict]) -> dict:
         lines.append(f"- {c.get('course_name') or 'Unbekannter Kurs'} | Note: {grade}{credit_str}")
 
     user_prompt = "Notenblatt des Studierenden:\n" + "\n".join(lines)
+
+    if cv_text:
+        user_prompt += f"\n\nLebenslauf:\n{cv_text}"
+
+    if quiz_topics:
+        quiz_lines = [
+            f"- {t.get('topic')}: {t.get('score')}% (Level: {t.get('level')})"
+            for t in quiz_topics
+            if t.get("topic")
+        ]
+        if quiz_lines:
+            user_prompt += "\n\nQuiz-Ergebnisse:\n" + "\n".join(quiz_lines)
 
     async def _invoke(llm):
         structured_llm = llm.with_structured_output(_CareerAnalysisSchema)

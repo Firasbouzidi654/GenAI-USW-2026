@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -190,7 +190,7 @@ def create_orchestrator(
     return create_agent(
         model=llm,
         tools=[ask_tutor, ask_evaluator, ask_planner, ask_career, ask_curriculum],
-        system_prompt=_SUPERVISOR_SYSTEM_PROMPT,
+        prompt=_SUPERVISOR_SYSTEM_PROMPT,
     )
 
 

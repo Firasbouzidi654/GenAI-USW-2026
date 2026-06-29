@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api.v1 import calendar, career, email_agent, evaluator, exams, focus_time, grades, history, job_agent, language_tutor, moodle_mock, planner, prompt, study_advisor, tutor, upload
+from app.api.v1 import calendar, career, email_agent, evaluator, exams, grades, history, job_agent, lsf_mock, moodle, planner, prompt, study_advisor, tutor, upload
 from app.core.database import Base, engine
 import app.models
 
@@ -36,19 +36,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(moodle_mock.router, prefix="/api")
+app.include_router(lsf_mock.router, prefix="/api")
+app.include_router(moodle.router, prefix="/api")
 app.include_router(prompt.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(exams.router, prefix="/api")
-app.include_router(focus_time.router, prefix="/api")
 app.include_router(job_agent.router, prefix="/api")
 app.include_router(calendar.router, prefix="/api")
 app.include_router(grades.router, prefix="/api")
 app.include_router(planner.router, prefix="/api")
 app.include_router(study_advisor.router, prefix="/api")
 app.include_router(evaluator.router, prefix="/api")
-app.include_router(language_tutor.router, prefix="/api")
 app.include_router(career.router, prefix="/api")
 app.include_router(email_agent.router, prefix="/api")
 app.include_router(tutor.router)

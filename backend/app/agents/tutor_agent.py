@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Any
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -392,6 +392,7 @@ Regeln:
 - Wahr/Falsch: keine Optionen, Antwort ist "true" oder "false"
 - ca. 70 % Multiple Choice, 30 % Wahr/Falsch
 - Variiere den Schwierigkeitsgrad
+- KEINE Fragen zu organisatorischen Themen wie Deadlines, Abgabedaten, Prüfungsmodalitäten, Benotungsschemas, Anwesenheitspflicht, Semesterplanung oder Kursorganisation — nur inhaltliche Fachfragen
 """.strip()
 
 
@@ -526,7 +527,7 @@ def create_tutor_agent(db: AsyncSession, chat_id: str | None = None, user_id: st
             list_moodle_courses,
             index_moodle_course,
         ],
-        system_prompt=_AGENT_SYSTEM_PROMPT,
+        prompt=_AGENT_SYSTEM_PROMPT,
     )
 
 

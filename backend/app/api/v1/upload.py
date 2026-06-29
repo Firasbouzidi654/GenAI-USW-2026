@@ -3,12 +3,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.document import DEFAULT_USER_ID, Document
 from app.rag.pipeline import process_document_sync
+from app.rag.store import get_collection
 
 UPLOAD_DIR = Path("uploads")
 
@@ -86,26 +87,64 @@ async def list_documents(
     user_id: str = Query(default=DEFAULT_USER_ID),
     db: AsyncSession = Depends(get_db),
 ):
-    """Listet ALLE hochgeladenen Dokumente des Nutzers (chat-übergreifend).
+    """Listet Dokumente des Nutzers, die tatsächlich in ChromaDB indexiert sind.
 
     Dokumente werden bewusst nicht nach Chat gruppiert, damit im Quiz auf alle
     Materialien zugegriffen werden kann. (``chat_id`` wird ignoriert, bleibt aus
     Kompatibilitätsgründen erhalten.)
     """
+    collection = get_collection()
+    if collection is None:
+        return []
     try:
-        stmt = (
-            select(Document.filename)
-            .where(Document.user_id == user_id)
-            .order_by(Document.uploaded_at.desc())
+        result = collection.get(
+            where={"user_id": {"$eq": user_id}},
+            include=["metadatas"],
         )
-        result = await db.execute(stmt)
-        # Duplikate (gleicher Dateiname mehrfach hochgeladen) entfernen, Reihenfolge erhalten
         seen: set[str] = set()
         names: list[str] = []
-        for (name,) in result.all():
-            if name not in seen:
-                seen.add(name)
-                names.append(name)
-        return names
+        for meta in result.get("metadatas") or []:
+            source = meta.get("source", "")
+            if source and source not in seen:
+                seen.add(source)
+                names.append(source)
+        return sorted(names)
+    except Exception:
+        return []
+
+
+@router.delete("/documents")
+async def delete_document(
+    name: str = Query(...),
+    user_id: str = Query(default=DEFAULT_USER_ID),
+    db: AsyncSession = Depends(get_db),
+):
+    """Löscht ein Dokument aus der DB, dem Upload-Ordner und ChromaDB."""
+    safe = Path(name).name
+    if not safe:
+        raise HTTPException(status_code=400, detail="Ungültiger Dateiname.")
+
+    # Remove from PostgreSQL
+    try:
+        await db.execute(delete(Document).where(Document.filename == safe, Document.user_id == user_id))
+        await db.commit()
     except Exception:
         raise HTTPException(status_code=503, detail="Datenbank nicht erreichbar.")
+
+    # Remove from ChromaDB
+    collection = get_collection()
+    if collection is not None:
+        try:
+            collection.delete(where={"source": {"$eq": safe}})
+        except Exception:
+            pass
+
+    # Remove from disk (search all subdirs)
+    if UPLOAD_DIR.exists():
+        for match in UPLOAD_DIR.rglob(safe):
+            try:
+                match.unlink()
+            except Exception:
+                pass
+
+    return {"status": "ok", "deleted": safe}

@@ -602,10 +602,13 @@
                   <div v-if="tutorDocuments.length === 0" class="tutor-empty">
                     Noch keine Dokumente. Lade hier ein PDF hoch, um daraus ein Quiz zu erstellen.
                   </div>
-                  <label v-for="doc in tutorDocuments" :key="doc" class="tutor-doc-item" @click.stop>
-                    <input type="checkbox" :value="doc" v-model="tutorSelectedDocs" @click.stop @change="onDocSelectionChange" />
-                    <span class="tutor-doc-name">{{ truncateName(doc, 32) }}</span>
-                  </label>
+                  <div v-for="doc in tutorDocuments" :key="doc" class="tutor-doc-row" @click.stop>
+                    <label class="tutor-doc-item" @click.stop>
+                      <input type="checkbox" :value="doc" v-model="tutorSelectedDocs" @click.stop @change="onDocSelectionChange" />
+                      <span class="tutor-doc-name">{{ truncateName(doc, 28) }}</span>
+                    </label>
+                    <button class="doc-delete-btn" @click.stop="deleteDocument(doc)" title="Dokument löschen">✕</button>
+                  </div>
                   <p v-if="quizUploadStatus" :class="['tutor-status', quizUploadStatus.type]">{{ quizUploadStatus.message }}</p>
                 </div>
                 <div class="tutor-config">
@@ -806,6 +809,7 @@
         <p class="chat-docs-label">Hochgeladene Dokumente</p>
         <div v-for="d in tutorDocuments" :key="d" class="chat-doc-item chat-doc-item--clickable" :title="'Öffnen: ' + d" @click.stop="openDocument(d)">
           <UiIcon name="clip" fallback="📎" /> <span>{{ truncateName(d, 22) }}</span>
+          <button class="doc-delete-btn" @click.stop="deleteDocument(d)" title="Dokument löschen">✕</button>
         </div>
       </div>
     </aside>
@@ -1225,8 +1229,18 @@ function detectCourseSemester(course) {
   return 'other'
 }
 
+function currentSemesterLabel() {
+  const now = new Date()
+  const month = now.getMonth() + 1
+  const year = now.getFullYear()
+  if (month >= 3 && month <= 8) return `SoSe ${year}`
+  const wisYear = month >= 9 ? year : year - 1
+  return `WiSe ${wisYear}/${String(wisYear + 1).slice(2)}`
+}
+
 const moodleSemesterFilters = [
-  { value: 'all', label: 'All' },
+  { value: 'current', label: 'Laufende' },
+  { value: 'all', label: 'Alle' },
   { value: 1, label: 'Semester 1' },
   { value: 2, label: 'Semester 2' },
   { value: 3, label: 'Semester 3' },
@@ -1270,7 +1284,7 @@ export default {
       moodleCoursesLoading: false,
       moodleCoursesError: '',
       moodleCoursesLoaded: false,
-      moodleSemesterFilter: 'all',
+      moodleSemesterFilter: 'current',
       moodleCourseSearch: '',
       selectedMoodleCourse: null,
       moodleActiveTab: 'materials',
@@ -1449,12 +1463,14 @@ export default {
     },
     filteredMoodleCourses() {
       const q = this.moodleCourseSearch.trim().toLowerCase()
+      const currentSemester = currentSemesterLabel()
       return this.moodleCourses
         .map(course => ({ ...course, detectedSemester: detectCourseSemester(course) }))
-        .filter(course => (
-          this.moodleSemesterFilter === 'all' ||
-          course.detectedSemester === this.moodleSemesterFilter
-        ))
+        .filter(course => {
+          if (this.moodleSemesterFilter === 'all') return true
+          if (this.moodleSemesterFilter === 'current') return course.semester === currentSemester
+          return course.detectedSemester === this.moodleSemesterFilter
+        })
         .filter(course => {
           if (!q) return true
           return [
@@ -1466,15 +1482,18 @@ export default {
     },
     moodleEmptyMessage() {
       if (this.moodleCourseSearch.trim()) {
-        return 'No Moodle courses match your search.'
+        return 'Keine Moodle-Kurse gefunden, die zur Suche passen.'
+      }
+      if (this.moodleSemesterFilter === 'current') {
+        return `Keine laufenden Kurse für ${currentSemesterLabel()} gefunden.`
       }
       if (typeof this.moodleSemesterFilter === 'number') {
-        return `No Moodle courses found for Semester ${this.moodleSemesterFilter}. You may not be enrolled in this semester yet.`
+        return `Keine Moodle-Kurse für Semester ${this.moodleSemesterFilter} gefunden.`
       }
       if (this.moodleSemesterFilter === 'other') {
-        return 'No Moodle courses found for Sonstiges / AWE / Wahlpflicht.'
+        return 'Keine Kurse für Sonstiges / AWE / Wahlpflicht gefunden.'
       }
-      return 'No courses found.'
+      return 'Keine Kurse gefunden.'
     },
     sortedMoodleDeadlines() {
       return [...this.moodleDeadlines].sort((a, b) => {
@@ -2602,6 +2621,15 @@ export default {
         if (res.ok) this.tutorDocuments = await res.json()
       } catch { /* silent */ }
     },
+    async deleteDocument(name) {
+      try {
+        const res = await fetch('/api/documents?name=' + encodeURIComponent(name), { method: 'DELETE' })
+        if (res.ok) {
+          this.tutorDocuments = this.tutorDocuments.filter(d => d !== name)
+          this.tutorSelectedDocs = this.tutorSelectedDocs.filter(d => d !== name)
+        }
+      } catch { /* silent */ }
+    },
     async uploadQuizFile(event) {
       // Lädt ein PDF direkt aus dem Quiz-Tab hoch (in den aktuellen Chat) — kein
       // Chatwechsel nötig. Nach dem Hochladen ist das Dokument auswählbar.
@@ -3144,9 +3172,17 @@ body {
 .chat-docs { margin-top: 6px; padding: 8px 10px; background: var(--surface-hover); border-radius: 8px; }
 .chat-docs-label { margin: 0 0 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
 .chat-doc-item {
-  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); padding: 2px 0;
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); padding: 2px 0; flex: 1; min-width: 0;
 }
 .chat-doc-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tutor-doc-row { display: flex; align-items: center; gap: 4px; }
+.doc-delete-btn {
+  flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--text-muted);
+  font-size: 11px; padding: 0 2px; opacity: 0; line-height: 1;
+}
+.chat-doc-item:hover .doc-delete-btn,
+.tutor-doc-row:hover .doc-delete-btn { opacity: 0.6; }
+.doc-delete-btn:hover { opacity: 1 !important; color: #dc2626; }
 
 /* HAUPTSPALTE */
 .main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }

@@ -12,7 +12,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from sqlalchemy import select
@@ -22,6 +22,7 @@ from app.agents.base import extract_text_output, get_llm
 from app.models.academic_event import AcademicEvent
 from app.models.calendar_event import CalendarEvent
 from app.models.grade import Grade
+from app.services.moodle_context_service import get_moodle_deadlines_context, get_next_moodle_deadline_context, get_moodle_courses_context
 from app.services.planner_service import get_event_priority
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,8 @@ Du bist ein intelligenter Lernplan-Agent (Planner Agent) für Studierende an der
 
 Du hast Zugriff auf:
 - Den Stundenplan (Kalender-Events: Vorlesungen, Seminare, Übungen)
-- Akademische Deadlines und Prüfungstermine (Planner-Events)
+- Akademische Deadlines und Prüfungstermine (Planner-Events aus LSF)
+- Moodle-Abgaben und Deadlines (get_moodle_deadlines — ergänzt LSF-Termine)
 - Noten und Leistungsstand
 
 Kernregeln:
@@ -160,11 +162,29 @@ def create_planner_agent(db: AsyncSession):
             logger.warning("Noten-Abfrage fehlgeschlagen: %s", exc)
             return "Noten konnten nicht abgerufen werden."
 
+    @tool
+    async def get_moodle_deadlines(course_name: str = "") -> str:
+        """Ruft Moodle-Abgabefristen ab. Ohne Kursname: nächste fällige Abgabe über alle Kurse.
+        Mit Kursname: alle Abgaben für diesen Kurs (offen und vergangen).
+
+        Args:
+            course_name: Kursname oder leer für die nächste globale Deadline.
+        """
+        if course_name.strip():
+            return await get_moodle_deadlines_context(course_name)
+        return await get_next_moodle_deadline_context()
+
+    @tool
+    async def get_moodle_courses() -> str:
+        """Listet alle belegten Moodle-Kurse des Studierenden."""
+        return await get_moodle_courses_context()
+
     llm = get_llm(temperature=0.3)
     return create_agent(
         model=llm,
-        tools=[get_upcoming_deadlines, get_calendar_schedule, get_grade_summary],
-        system_prompt=_SYSTEM_PROMPT,
+        tools=[get_upcoming_deadlines, get_calendar_schedule, get_grade_summary,
+               get_moodle_deadlines, get_moodle_courses],
+        prompt=_SYSTEM_PROMPT,
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 
 from app.core.config import settings
@@ -56,10 +57,44 @@ def _chunk_text(text: str) -> list[str]:
         return [text[i : i + size] for i in range(0, len(text), step) if text[i : i + size].strip()]
 
 
+def _split_pptx_slides(text: str) -> list[str]:
+    matches = list(re.finditer(r"(?m)^Slide\s+\d+(?::\s*[^\n]+)?", text or ""))
+    if not matches:
+        return [text] if text and text.strip() else []
+    slides: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        slide_text = text[match.start():end].strip()
+        if slide_text:
+            slides.append(slide_text)
+    return slides
+
+
+def _chunk_document_text(filename: str, text: str) -> list[str]:
+    if filename.lower().endswith(".pptx"):
+        chunks: list[str] = []
+        for slide_text in _split_pptx_slides(text):
+            chunks.extend(_chunk_text(slide_text))
+        return chunks
+    return _chunk_text(text)
+
+
 def _doc_id(filename: str, chunk_index: int, content: str, chat_id: str | None) -> str:
     digest = hashlib.sha1(content.encode("utf-8", errors="ignore")).hexdigest()[:8]
     scope = chat_id or "global"
     return f"{scope}::{filename}::{chunk_index}::{digest}"
+
+
+def _infer_slide_metadata(filename: str, chunk: str) -> dict:
+    if not filename.lower().endswith(".pptx"):
+        return {}
+    match = re.search(r"(?:^|\n)Slide\s+(\d+)(?::\s*([^\n]+))?", chunk, flags=re.IGNORECASE)
+    if not match:
+        return {}
+    meta = {"slide_number": int(match.group(1))}
+    if match.group(2):
+        meta["slide_title"] = match.group(2).strip()[:160]
+    return meta
 
 
 def process_document_sync(
@@ -84,7 +119,7 @@ def process_document_sync(
         logger.info("Kein Text extrahierbar aus %s", file_path)
         return
 
-    chunks = _chunk_text(text)
+    chunks = _chunk_document_text(path.name, text)
     if not chunks:
         return
 
@@ -148,7 +183,7 @@ def index_text(
     if not text or not text.strip():
         return 0
 
-    chunks = _chunk_text(text)
+    chunks = _chunk_document_text(filename, text)
     if not chunks:
         return 0
 
@@ -173,6 +208,7 @@ def index_text(
         }
         if extra_meta:
             meta.update(extra_meta)
+        meta.update(_infer_slide_metadata(filename, chunks[i]))
         metadatas.append(meta)
 
     try:

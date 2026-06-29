@@ -26,6 +26,7 @@ def _build_where(
     source_filter: list[str] | None,
     chat_id: str | None,
     user_id: str | None,
+    metadata_filter: dict | None = None,
 ) -> dict | None:
     """Baut den ChromaDB-``where``-Filter.
 
@@ -42,12 +43,36 @@ def _build_where(
         conditions.append({"chat_id": {"$eq": chat_id}})
     if user_id is not None:
         conditions.append({"user_id": {"$eq": user_id}})
+    for key, value in (metadata_filter or {}).items():
+        if value is None:
+            continue
+        conditions.append({key: {"$eq": value}})
 
     if not conditions:
         return None
     if len(conditions) == 1:
         return conditions[0]
     return {"$and": conditions}
+
+
+def has_indexed_source(
+    source: str,
+    user_id: str | None = None,
+    metadata_filter: dict | None = None,
+) -> bool:
+    """Checks whether Chroma already contains chunks for a source and metadata scope."""
+    if not source:
+        return False
+    collection = get_collection()
+    if collection is None:
+        return False
+    where = _build_where([source], None, user_id, metadata_filter)
+    try:
+        result = collection.get(where=where, limit=1)
+    except Exception as exc:
+        logger.warning("Chroma-Existenzcheck fehlgeschlagen: %s", exc)
+        return False
+    return bool(result.get("ids"))
 
 
 async def retrieve_context(
@@ -57,6 +82,7 @@ async def retrieve_context(
     threshold: float | None = 0.4,
     chat_id: str | None = None,
     user_id: str | None = None,
+    metadata_filter: dict | None = None,
 ) -> str:
     """Sucht in ChromaDB die für ``query`` relevantesten Chunks und gibt sie als Text zurück.
 
@@ -72,6 +98,7 @@ async def retrieve_context(
         threshold: Cosine-Distance-Schwellenwert (0–2). ``None`` deaktiviert die Filterung.
         chat_id: Beschränkt die Suche auf Dokumente dieses Chats (Isolation).
         user_id: Beschränkt die Suche auf Dokumente dieses Nutzers (Multi-User).
+        metadata_filter: Zusätzliche Chroma-Metadatenfilter, z.B. Moodle-Kurs-ID.
 
     Bei jedem Fehler (kein Chroma, kein Embedding, kein Treffer) wird ein
     leerer String zurückgegeben.
@@ -87,7 +114,7 @@ async def retrieve_context(
     if not embeddings:
         return ""
 
-    where = _build_where(source_filter, chat_id, user_id)
+    where = _build_where(source_filter, chat_id, user_id, metadata_filter)
 
     try:
         query_kwargs: dict = {

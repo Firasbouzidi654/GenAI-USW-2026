@@ -7,6 +7,7 @@ Für Quiz-Generierung wird `with_structured_output` eingesetzt.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm
 from app.models.document import Document
-from app.rag.retriever import retrieve_context
+from app.rag.retriever import has_indexed_source, retrieve_context
 
 logger = logging.getLogger(__name__)
 
@@ -29,20 +30,357 @@ _AGENT_SYSTEM_PROMPT = """
 Du bist ein intelligenter Tutor-Agent für Studierende an der HTW Berlin.
 
 Deine Aufgaben:
-- Fragen zu Lernmaterialien beantworten (nutze immer erst deine Such-Tools)
+- Fragen zu Lernmaterialien beantworten, wenn die Frage Dokumente, PDFs,
+  hochgeladene Unterlagen, Moodle oder Kursmaterialien erwähnt
 - Konzepte erklären, Zusammenhänge aufzeigen
 - Den Lernfortschritt durch gezielte Rückfragen fördern
 
 Verhalten:
-- Suche IMMER zuerst in den hochgeladenen Lernmaterialien (search_learning_material)
-- Wenn dort nichts Relevantes gefunden wird, prüfe die in Moodle belegten Kurse:
-  rufe list_moodle_courses auf, wähle den thematisch passenden Kurs und lade dessen
-  Materialien mit index_moodle_course nach. Suche danach erneut mit search_learning_material.
+- Bei allgemeinen Konzeptfragen (z.B. Programmierung, SQL, JavaScript, Theorie)
+  antworte direkt aus deinem Wissen, ohne Dokumenten- oder Moodle-Tools.
+- Suche in hochgeladenen Lernmaterialien nur, wenn der Studierende explizit nach
+  Dokumenten, PDFs, hochgeladenen Unterlagen, Quellen, Kursmaterialien oder Moodle fragt.
+- Moodle-Kurse und Moodle-Indexierung nutzt du nur bei expliziten Moodle-/Kursmaterial-Fragen
+  oder wenn der Studierende ausdrücklich Moodle-Materialien indexieren will.
 - Falls auch dann nichts gefunden wird, sage das ehrlich
 - Antworte auf Deutsch, es sei denn, der Studierende schreibt Englisch
 - Sei ermutigend und klar, nicht übermäßig akademisch
 - Wenn du mehrere Dokumente findest, nutze sie alle
 """.strip()
+
+_DIRECT_TUTOR_SYSTEM_PROMPT = """
+Du bist ein Tutor-Agent für Studierende. Beantworte allgemeine Fach- und
+Programmierfragen direkt, klar und didaktisch. Nutze keine Dokumenten-, RAG-,
+Moodle- oder Datenbank-Tools. Wenn die Frage explizit nach hochgeladenen
+Dokumenten, PDFs, Moodle, Kursmaterialien, Noten oder Deadlines fragt, sage nicht
+ausweichend, sondern diese Fälle werden außerhalb dieses direkten Pfads behandelt.
+""".strip()
+
+_MATERIAL_CONTEXT_KEYWORDS = (
+    "moodle",
+    "dokument",
+    "dokumente",
+    "document",
+    "documents",
+    "pdf",
+    "datei",
+    "dateien",
+    "file",
+    "files",
+    "hochgeladen",
+    "uploaded",
+    "upload",
+    "unterlage",
+    "unterlagen",
+    "lernmaterial",
+    "lernmaterialien",
+    "material",
+    "materialien",
+    "course material",
+    "kursmaterial",
+    "slides",
+    "folie",
+    "folien",
+    "skript",
+    "quelle",
+    "quellen",
+    "chapter",
+    "kapitel",
+)
+
+_SELECTED_MOODLE_MATERIAL_KEYWORDS = (
+    "session",
+    "slides",
+    "slide",
+    "folie",
+    "folien",
+    "ppt",
+    "pptx",
+    "pdf",
+    "material",
+    "materialien",
+)
+
+
+_MOODLE_RAG_SYSTEM_PROMPT = """
+Du bist ein Tutor-Agent und Study Assistant. Beantworte die Frage ausschließlich
+anhand des bereitgestellten Moodle-Kontexts aus dem aktuell ausgewählten Kurs.
+Vermische keine Materialien aus anderen Kursen. Wenn der Kontext nicht ausreicht,
+sage das ehrlich.
+
+Wenn ein Moodle-Dokument, eine Session oder Folien erklärt werden sollen, liefere
+eine ausführliche, lernorientierte Antwort mit diesen Teilen, soweit der Kontext
+sie hergibt:
+- Kurze Zusammenfassung
+- Hauptthemen
+- Wichtige Konzepte und Begriffe
+- Beispiele aus dem Material, falls vorhanden
+- Lernziele
+- Key Takeaways
+- 3 bis 5 optionale Quizfragen zur Selbstkontrolle
+
+Schreibe didaktisch, konkret und hilfreich. Antworte in der Sprache der Frage;
+bei deutschen Prompts auf Deutsch.
+""".strip()
+
+
+def _needs_material_context(message: str) -> bool:
+    text = (message or "").lower()
+    return any(keyword in text for keyword in _MATERIAL_CONTEXT_KEYWORDS)
+
+
+def _normalize_course_id(course_id):
+    if isinstance(course_id, str) and course_id.isdigit():
+        return int(course_id)
+    return course_id
+
+
+def _iter_moodle_context_sections(moodle_context: dict | None):
+    if not isinstance(moodle_context, dict):
+        return
+    for section in moodle_context.get("sections") or []:
+        if isinstance(section, dict):
+            yield section
+
+
+def _is_selected_moodle_material_request(message: str, moodle_context: dict | None) -> bool:
+    if not isinstance(moodle_context, dict) or not moodle_context.get("course_id"):
+        return False
+    text = (message or "").lower()
+    if not text:
+        return False
+    if any(keyword in text for keyword in _SELECTED_MOODLE_MATERIAL_KEYWORDS):
+        return True
+    for section in _iter_moodle_context_sections(moodle_context):
+        section_name = str(section.get("section_name") or "").lower()
+        if section_name and section_name in text:
+            return True
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("name", "filename"):
+                label = str(item.get(key) or "").lower()
+                if label and label in text:
+                    return True
+    return False
+
+
+def _matching_moodle_sources(message: str, moodle_context: dict | None) -> list[str] | None:
+    matched_sources = [f["filename"] for f in _matching_moodle_files(message, moodle_context)]
+    if not matched_sources:
+        return None
+    return list(dict.fromkeys(matched_sources))
+
+
+def _is_supported_moodle_file(filename: str) -> bool:
+    return filename.lower().endswith((".pdf", ".pptx", ".docx"))
+
+
+def _matching_moodle_files(message: str, moodle_context: dict | None) -> list[dict]:
+    text = (message or "").lower()
+    matched: list[dict] = []
+    for section in _iter_moodle_context_sections(moodle_context):
+        section_name = str(section.get("section_name") or "")
+        section_matches = bool(section_name and section_name.lower() in text)
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            filename = str(item.get("filename") or "").strip()
+            if not filename or not _is_supported_moodle_file(filename):
+                continue
+            name = str(item.get("name") or "").strip()
+            item_matches = any(
+                label and label.lower() in text
+                for label in (filename, name)
+            )
+            if section_matches or item_matches:
+                matched.append({
+                    "filename": filename,
+                    "fileurl": item.get("fileurl") or item.get("url") or "",
+                    "module": name,
+                    "section": section_name,
+                })
+    by_filename: dict[str, dict] = {}
+    for file_info in matched:
+        by_filename[file_info["filename"]] = file_info
+    return list(by_filename.values())
+
+
+async def _load_matching_moodle_files_from_service(
+    message: str,
+    moodle_context: dict,
+) -> list[dict]:
+    from app.services import moodle_service
+
+    course_id = moodle_context.get("course_id")
+    if not course_id or not moodle_service.is_configured():
+        return []
+    try:
+        files = await moodle_service.get_course_files(int(course_id) if str(course_id).isdigit() else course_id)
+    except Exception as exc:
+        logger.warning("Moodle-Dateiliste konnte nicht geladen werden: %s", exc)
+        return []
+
+    text = (message or "").lower()
+    matched: list[dict] = []
+    for file_info in files:
+        filename = str(file_info.get("filename") or "")
+        section = str(file_info.get("section") or "")
+        module = str(file_info.get("module") or "")
+        if not filename or not _is_supported_moodle_file(filename):
+            continue
+        if (
+            filename.lower() in text
+            or (section and section.lower() in text)
+            or (module and module.lower() in text)
+        ):
+            matched.append(file_info)
+    by_filename: dict[str, dict] = {}
+    for file_info in matched:
+        by_filename[file_info["filename"]] = file_info
+    return list(by_filename.values())
+
+
+def _selected_moodle_course_label(moodle_context: dict | None) -> str:
+    if not isinstance(moodle_context, dict):
+        return "dem ausgewählten Moodle-Kurs"
+    return str(
+        moodle_context.get("course_name")
+        or moodle_context.get("course_shortname")
+        or "dem ausgewählten Moodle-Kurs"
+    )
+
+
+async def _ensure_moodle_files_indexed(
+    files: list[dict],
+    moodle_context: dict,
+    chat_id: str | None,
+    user_id: str,
+    metadata_filter: dict,
+) -> tuple[int, int]:
+    from app.rag.pipeline import index_text
+    from app.services import moodle_service
+
+    course_name = _selected_moodle_course_label(moodle_context)
+    indexed_files = 0
+    chunks = 0
+    for file_info in files:
+        filename = str(file_info.get("filename") or "").strip()
+        fileurl = str(file_info.get("fileurl") or "").strip()
+        if not filename or not fileurl:
+            continue
+        if has_indexed_source(filename, user_id=user_id, metadata_filter=metadata_filter):
+            continue
+        try:
+            text = await moodle_service.download_file_text(fileurl, filename)
+        except moodle_service.MoodleError as exc:
+            logger.warning("Moodle-Datei konnte nicht geladen werden (%s): %s", filename, exc)
+            continue
+        if not text:
+            continue
+        n_chunks = await asyncio.to_thread(
+            index_text,
+            filename,
+            text,
+            chat_id,
+            user_id,
+            {
+                **metadata_filter,
+                "course_name": course_name,
+                "section": file_info.get("section") or "",
+                "module": file_info.get("module") or "",
+            },
+        )
+        if n_chunks:
+            indexed_files += 1
+            chunks += n_chunks
+    return indexed_files, chunks
+
+
+async def _answer_from_selected_moodle_material(
+    message: str,
+    chat_id: str | None,
+    user_id: str,
+    moodle_context: dict,
+) -> str:
+    course_id = _normalize_course_id(moodle_context.get("course_id"))
+    course_label = _selected_moodle_course_label(moodle_context)
+    matched_files = _matching_moodle_files(message, moodle_context)
+    if not matched_files or any(not f.get("fileurl") for f in matched_files):
+        service_files = await _load_matching_moodle_files_from_service(message, moodle_context)
+        by_filename = {f["filename"]: f for f in service_files if f.get("filename")}
+        for file_info in matched_files:
+            if file_info.get("filename") in by_filename:
+                merged = {**file_info, **by_filename[file_info["filename"]]}
+                by_filename[file_info["filename"]] = merged
+            else:
+                by_filename[file_info["filename"]] = file_info
+        matched_files = list(by_filename.values())
+    source_filter = [f["filename"] for f in matched_files] or _matching_moodle_sources(message, moodle_context)
+    metadata_filter = {"moodle": "1", "course_id": course_id}
+
+    context = await retrieve_context(
+        message,
+        source_filter=source_filter,
+        n_results=12,
+        threshold=None,
+        chat_id=None,
+        user_id=user_id,
+        metadata_filter=metadata_filter,
+    )
+    if not context and matched_files:
+        await _ensure_moodle_files_indexed(
+            matched_files, moodle_context, chat_id, user_id, metadata_filter
+        )
+        context = await retrieve_context(
+            message,
+            source_filter=source_filter,
+            n_results=12,
+            threshold=None,
+            chat_id=None,
+            user_id=user_id,
+            metadata_filter=metadata_filter,
+        )
+    if not context and source_filter:
+        context = await retrieve_context(
+            message,
+            n_results=12,
+            threshold=None,
+            chat_id=None,
+            user_id=user_id,
+            metadata_filter=metadata_filter,
+        )
+    if not context:
+        return (
+            f"Ich habe fuer {course_label} noch keine passenden indexierten Moodle-Inhalte "
+            "gefunden oder konnte die passende Moodle-Datei nicht lesen. Unterstuetzt "
+            "werden PDF, PPTX und DOCX."
+        )
+
+    source_note = f"\n\nAngefragte Datei(en): {', '.join(source_filter)}" if source_filter else ""
+    llm = get_llm(temperature=0.2)
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=_MOODLE_RAG_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    f"Aktuell ausgewaehlter Moodle-Kurs: {course_label} "
+                    f"(Course ID: {course_id}).{source_note}\n\n"
+                    f"Frage: {message}\n\n"
+                    f"Moodle-Kontext:\n{context}"
+                )
+            ),
+        ])
+        text = response.content if isinstance(response.content, str) else ""
+        if isinstance(response.content, list):
+            text = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in response.content
+            )
+        return text.strip() or "Ich konnte leider keine Antwort generieren."
+    except Exception as exc:
+        logger.error("TutorAgent Moodle-RAG-Antwort fehlgeschlagen: %s", exc)
+        return "Der Tutor ist momentan nicht erreichbar. Bitte spaeter erneut versuchen."
 
 _QUIZ_SYSTEM_PROMPT = """
 Du bist ein Tutor-Agent der Multiple-Choice- und Wahr/Falsch-Fragen generiert.
@@ -195,9 +533,36 @@ def create_tutor_agent(db: AsyncSession, chat_id: str | None = None, user_id: st
 # ── Öffentliche API ───────────────────────────────────────────────────────────
 
 async def run_tutor_agent(
-    message: str, db: AsyncSession, chat_id: str | None = None, user_id: str = "local"
+    message: str,
+    db: AsyncSession,
+    chat_id: str | None = None,
+    user_id: str = "local",
+    moodle_context: dict | None = None,
 ) -> str:
     """Führt den TutorAgent für eine Konversationsrunde aus."""
+    if _is_selected_moodle_material_request(message, moodle_context):
+        return await _answer_from_selected_moodle_material(
+            message, chat_id, user_id, moodle_context or {}
+        )
+
+    if not _needs_material_context(message):
+        llm = get_llm(temperature=0.2)
+        try:
+            response = await llm.ainvoke([
+                SystemMessage(content=_DIRECT_TUTOR_SYSTEM_PROMPT),
+                HumanMessage(content=message),
+            ])
+            text = response.content if isinstance(response.content, str) else ""
+            if isinstance(response.content, list):
+                text = "".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in response.content
+                )
+            return text.strip() or "Ich konnte leider keine Antwort generieren."
+        except Exception as exc:
+            logger.error("TutorAgent Direktantwort fehlgeschlagen: %s", exc)
+            return "Der Tutor ist momentan nicht erreichbar. Bitte später erneut versuchen."
+
     agent = create_tutor_agent(db, chat_id, user_id)
     try:
         result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})

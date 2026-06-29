@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.rag import pipeline
-from app.rag.pipeline import _chunk_text, _doc_id, process_document
+from app.rag.pipeline import _chunk_text, _doc_id, index_text, process_document
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +151,32 @@ async def test_process_document_swallows_upsert_errors(tmp_path):
          patch.object(pipeline, "get_collection", return_value=fake_collection):
         # Upload soll auch dann nicht 500 werden, wenn Chroma-Upsert wirft.
         await process_document(str(pdf_path))
+
+
+def test_index_text_adds_slide_metadata_for_pptx_chunks():
+    fake_collection = MagicMock()
+    chunks = [
+        "Slide 1: Promises Grundlagen\nAsynchrone Werte",
+        "Slide 2: Async Await\nLesbarer Kontrollfluss",
+    ]
+
+    with patch.object(pipeline, "_chunk_text", side_effect=lambda text: [text]), \
+         patch.object(pipeline, "embed_texts", return_value=[[0.1], [0.2]]), \
+         patch.object(pipeline, "get_collection", return_value=fake_collection):
+        count = index_text(
+            "slides.pptx",
+            "\n\n".join(chunks),
+            chat_id="chat-1",
+            user_id="local",
+            extra_meta={"moodle": "1", "course_id": 58776},
+        )
+
+    assert count == 2
+    metadatas = fake_collection.upsert.call_args.kwargs["metadatas"]
+    assert metadatas[0]["slide_number"] == 1
+    assert metadatas[0]["slide_title"] == "Promises Grundlagen"
+    assert metadatas[1]["slide_number"] == 2
+    assert metadatas[1]["slide_title"] == "Async Await"
+    assert metadatas[0]["chat_id"] == "chat-1"
+    assert metadatas[0]["user_id"] == "local"
+    assert metadatas[0]["moodle"] == "1"

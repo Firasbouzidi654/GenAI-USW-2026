@@ -10,6 +10,8 @@ langchain-core
 langchain-google-genai>=2.0.0
 langchain-text-splitters
 pypdf
+python-docx
+python-pptx
 google-genai
 python-multipart
 python-dotenv

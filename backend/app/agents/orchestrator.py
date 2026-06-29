@@ -26,6 +26,7 @@ from app.agents.curriculum_agent import run_curriculum_agent
 from app.agents.evaluator_agent import run_evaluator_agent
 from app.agents.planner_agent import run_planner_agent
 from app.agents.tutor_agent import run_tutor_agent
+from app.services.moodle_context_service import get_moodle_context_for_message
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,75 @@ Regeln:
 - Wiederhole nicht stumpf die Agent-Ausgaben, sondern integriere sie sinnvoll.
 """.strip()
 
+_MOODLE_CONTEXT_KEYWORDS = (
+    "moodle",
+    "moodle course",
+    "moodle deadline",
+    "moodle aufgabe",
+    "moodle grades",
+    "moodle materials",
+)
 
-def create_orchestrator(db: AsyncSession, chat_id: str | None = None, user_id: str = "local"):
+_SELECTED_MOODLE_MATERIAL_KEYWORDS = (
+    "session",
+    "slides",
+    "slide",
+    "folie",
+    "folien",
+    "ppt",
+    "pptx",
+    "pdf",
+    "material",
+    "materialien",
+)
+
+
+def _is_explicit_moodle_context_request(message: str) -> bool:
+    text = (message or "").lower()
+    return any(keyword in text for keyword in _MOODLE_CONTEXT_KEYWORDS)
+
+
+def _iter_moodle_context_labels(moodle_context: dict | None):
+    if not isinstance(moodle_context, dict):
+        return
+    for value in (
+        moodle_context.get("course_name"),
+        moodle_context.get("course_shortname"),
+        moodle_context.get("selected_section"),
+        moodle_context.get("selected_material"),
+    ):
+        if value:
+            yield str(value)
+    for section in moodle_context.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        if section.get("section_name"):
+            yield str(section["section_name"])
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("name", "filename"):
+                if item.get(key):
+                    yield str(item[key])
+
+
+def _is_selected_moodle_material_request(message: str, moodle_context: dict | None) -> bool:
+    if not isinstance(moodle_context, dict) or not moodle_context.get("course_id"):
+        return False
+    text = (message or "").lower()
+    if not text:
+        return False
+    if any(keyword in text for keyword in _SELECTED_MOODLE_MATERIAL_KEYWORDS):
+        return True
+    return any(label.lower() and label.lower() in text for label in _iter_moodle_context_labels(moodle_context))
+
+
+def create_orchestrator(
+    db: AsyncSession,
+    chat_id: str | None = None,
+    user_id: str = "local",
+    moodle_context: dict | None = None,
+):
     """Erstellt den Supervisor-Agent, dessen Tools die vier Spezial-Agents sind.
 
     ``chat_id``/``user_id`` werden an den Tutor weitergereicht, damit dieser nur
@@ -75,7 +143,7 @@ def create_orchestrator(db: AsyncSession, chat_id: str | None = None, user_id: s
         Args:
             question: Die fachliche Frage des Studierenden.
         """
-        return await run_tutor_agent(question, db, chat_id, user_id)
+        return await run_tutor_agent(question, db, chat_id, user_id, moodle_context=moodle_context)
 
     @tool
     async def ask_evaluator(request: str) -> str:
@@ -127,14 +195,24 @@ def create_orchestrator(db: AsyncSession, chat_id: str | None = None, user_id: s
 
 
 async def run_orchestrator(
-    message: str, db: AsyncSession, chat_id: str | None = None, user_id: str = "local"
+    message: str,
+    db: AsyncSession,
+    chat_id: str | None = None,
+    user_id: str = "local",
+    moodle_context: dict | None = None,
 ) -> str:
     """Führt den Supervisor-Agent aus. Einstiegspunkt für das Multi-Agent-System.
 
     Der Supervisor entscheidet selbst, welche Spezial-Agents er aufruft, verkettet
     sie bei Bedarf und liefert eine integrierte Antwort.
     """
-    orchestrator = create_orchestrator(db, chat_id, user_id)
+    if _is_selected_moodle_material_request(message, moodle_context):
+        return await run_tutor_agent(message, db, chat_id, user_id, moodle_context=moodle_context)
+
+    if _is_explicit_moodle_context_request(message):
+        return await get_moodle_context_for_message(message)
+
+    orchestrator = create_orchestrator(db, chat_id, user_id, moodle_context)
     try:
         result = await orchestrator.ainvoke({"messages": [HumanMessage(content=message)]})
         return extract_text_output(result) or "Ich konnte leider keine Antwort generieren."

@@ -197,3 +197,81 @@ sich Dokumente verschiedener Chats nicht mehr. Über **„＋ Neuer Chat"** (Nav
 man einen frischen Chat mit eigener `chat_id` (eigene Dokumente, leerer Verlauf). Die
 `user_id` (Default `local`) ist bereits durchgereicht und vorbereitet für späteren
 Multi-User-Betrieb.
+
+
+
+# 🎓 Moodle Integration Setup
+
+Connect this application to your HTW Berlin Moodle account by providing your **Moodle token** and **user ID**.
+
+---
+
+## Step 1 — Generate a Moodle Token
+
+Open the following URL in your browser, replacing the username and password with your HTW credentials:
+
+```text
+https://moodle.htw-berlin.de/login/token.php?username=s0XXXXXX&password=YOUR_PASSWORD&service=moodle_mobile_app
+```
+
+You will receive a JSON response like this:
+
+```json
+{
+  "token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "privatetoken": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+> ⚠️ Only the `token` value is required by this application.
+
+---
+
+## Step 2 — Retrieve Your User ID
+
+Use your token to fetch your account information. Open the following URL, replacing `YOUR_TOKEN` with the token from Step 1:
+
+```text
+https://moodle.htw-berlin.de/webservice/rest/server.php?wstoken=YOUR_TOKEN&wsfunction=core_webservice_get_site_info&moodlewsrestformat=json
+```
+
+Example response:
+
+```json
+{
+  "userid": 12345,
+  "username": "s0XXXXXX",
+  "firstname": "John",
+  "lastname": "Doe"
+}
+```
+
+Copy the `userid` value and enter it into the application settings.
+
+---
+
+# Moodle API Integration
+
+The application integrates with Moodle Web Services to retrieve course materials, deadlines, and learning resources.
+
+## Currently Implemented APIs
+
+| API Function                        | Purpose                                                     |
+| ----------------------------------- | ----------------------------------------------------------- |
+| `core_webservice_get_site_info`     | Retrieve user information and Moodle user ID                |
+| `core_enrol_get_users_courses`      | Load enrolled Moodle courses                                |
+| `core_course_get_contents`          | Retrieve course sections, files, assignments, and resources |
+| `core_calendar_get_calendar_events` | Retrieve deadlines and calendar events                      |
+
+## Planned APIs
+
+| API Function                                       | Purpose                                         |
+| -------------------------------------------------- | ----------------------------------------------- |
+| `mod_assign_get_assignments`                       | Retrieve assignment information                 |
+| `mod_assign_get_submission_status`                 | Check assignment submission status              |
+| `gradereport_user_get_grade_items`                 | Display grades and feedback                     |
+| `core_completion_get_activities_completion_status` | Track course progress                           |
+| `core_calendar_get_calendar_upcoming_view`         | Generate smart notifications and upcoming tasks |
+| `mod_quiz_get_user_attempts`                       | Display quiz history                            |
+| `mod_quiz_get_quizzes_by_courses`                  | Retrieve available quizzes                      |
+

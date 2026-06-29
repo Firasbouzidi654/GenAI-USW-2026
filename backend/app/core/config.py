@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     htw_email_password: str = ""
     htw_imap_host: str = ""
     htw_imap_port: int = 993
+    # Moodle Web Services (HTW). Token im Moodle unter Einstellungen → Sicherheitsschlüssel erstellen.
+    moodle_url: str = "https://moodle.htw-berlin.de"
+    moodle_token: str = ""
+    moodle_user_id: str = ""
+    # Stellensuche: Adzuna (kostenloser Key auf developer.adzuna.com) für echte Suche + Gehalt.
+    # Ohne Key fällt der Job-Service auf Arbeitnow (frei, ohne Key) zurück.
+    adzuna_app_id: str = ""
+    adzuna_app_key: str = ""
+    adzuna_country: str = "de"
+    job_location: str = "Berlin"
+    # App wird von Studierenden genutzt → standardmäßig nur Werkstudentenstellen.
+    job_student_only: bool = True
 
     @property
     def gemini_model_list(self) -> list[str]:

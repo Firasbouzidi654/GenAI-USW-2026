@@ -35,13 +35,13 @@
       <div class="nav-items">
         <div v-for="item in navItems" :key="item.id" class="nav-item">
           <button
-            @click="togglePanel(item.id)"
-            :class="['nav-btn', { active: activePanel === item.id }]"
+            @click="item.id === 'moodle' ? openMoodlePage() : togglePanel(item.id)"
+            :class="['nav-btn', { active: activePanel === item.id || (item.id === 'moodle' && mainView === 'moodle') }]"
           >
             <UiIcon :name="item.iconName" :fallback="item.icon" cls="nav-icon-img" />
             {{ item.label }}
           </button>
-          <div v-if="activePanel === item.id" :class="['dropdown', { 'dropdown--calendar': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'career' || item.id === 'profil' }]">
+          <div v-if="activePanel === item.id && item.id !== 'moodle'" :class="['dropdown', { 'dropdown--calendar': item.id === 'kalender', 'dropdown--extra-wide': item.id === 'noten' || item.id === 'planner' || item.id === 'quiz' || item.id === 'career' || item.id === 'profil' }]">
             <h4 class="dropdown-title">{{ item.label }}</h4>
             <ul>
               <li v-for="entry in item.entries" :key="entry">{{ entry }}</li>
@@ -374,7 +374,7 @@
                         :class="['cal-chip', 'cal-chip--' + e.kind]"
                         :title="e.title"
                       >{{ e.title }}</span>
-                      <span v-if="day.events.length > 3" class="cal-more">+{{ day.events.length - 3 }}</span>
+                      <span v-if="day.events.length > 3" class="cal-more">+{{ day.events.length - 3 }} mehr</span>
                     </div>
                   </div>
                 </template>
@@ -812,8 +812,176 @@
 
     <!-- HAUPTSPALTE: Chat + Eingabe -->
     <div class="main-col">
+    <section v-if="mainView === 'moodle'" class="moodle-overview moodle-overview--page" @click.stop>
+      <div class="moodle-overview-header">
+        <div>
+          <h3>Moodle Course Overview</h3>
+          <p>Sections, files, links and assignments from Moodle.</p>
+        </div>
+        <span class="moodle-overview-tag">HTW Moodle</span>
+      </div>
+
+      <div class="moodle-course-picker">
+        <div class="moodle-course-picker-head">
+          <span>Courses</span>
+          <button class="moodle-refresh-btn" type="button" :disabled="moodleCoursesLoading" @click="loadMoodleCourses(true)">
+            {{ moodleCoursesLoading ? 'Loading...' : 'Refresh' }}
+          </button>
+        </div>
+        <p v-if="moodleCoursesError" class="moodle-overview-error">{{ moodleCoursesError }}</p>
+        <p v-else-if="moodleCoursesLoading" class="moodle-overview-empty">Loading Moodle courses...</p>
+        <p v-else-if="moodleCoursesLoaded && moodleCourses.length === 0" class="moodle-overview-empty">No courses found.</p>
+        <template v-if="moodleCourses.length">
+          <div class="moodle-filter-tabs">
+            <button
+              v-for="filter in moodleSemesterFilters"
+              :key="filter.value"
+              type="button"
+              :class="{ active: moodleSemesterFilter === filter.value }"
+              @click="moodleSemesterFilter = filter.value"
+            >{{ filter.label }}</button>
+          </div>
+          <input
+            v-model.trim="moodleCourseSearch"
+            class="moodle-course-search"
+            type="search"
+            placeholder="Search course..."
+          />
+        </template>
+        <p v-if="moodleCourses.length && filteredMoodleCourses.length === 0" class="moodle-overview-empty">{{ moodleEmptyMessage }}</p>
+        <div v-if="filteredMoodleCourses.length" class="moodle-course-grid">
+          <button
+            v-for="course in filteredMoodleCourses"
+            :key="course.id"
+            type="button"
+            :class="['moodle-course-card', { active: selectedMoodleCourse && selectedMoodleCourse.id === course.id }]"
+            @click="selectMoodleCourse(course)"
+          >
+            <span class="moodle-course-title"><UiIcon name="book" fallback="📚" /> {{ course.fullname }}</span>
+            <span class="moodle-course-short">{{ course.shortname || 'No shortname' }}</span>
+            <span class="moodle-course-id">Course ID: {{ course.id }}</span>
+            <span class="moodle-course-semester">{{ moodleCourseSemesterLabel(course) }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="selectedMoodleCourse" class="moodle-selected">
+        <span class="moodle-selected-label">Selected course</span>
+        <strong>{{ selectedMoodleCourse.fullname }}</strong>
+        <span>{{ selectedMoodleCourse.shortname }} · Course ID: {{ selectedMoodleCourse.id }}</span>
+        <span v-if="nextMoodleDeadline" class="moodle-next-deadline">
+          Next deadline: {{ nextMoodleDeadline.name }} · {{ formatMoodleDateShort(nextMoodleDeadline.due_date) }}
+        </span>
+        <span v-else-if="moodleDeadlinesLoaded && !moodleDeadlinesLoading" class="moodle-next-deadline">
+          No upcoming Moodle deadline
+        </span>
+      </div>
+
+      <div v-if="selectedMoodleCourse" class="moodle-study-focus">
+        <span class="moodle-study-focus-label">Study Focus</span>
+        <strong>Next Moodle deadline: {{ nextMoodleDeadline ? nextMoodleDeadline.name : 'None' }}</strong>
+        <span>Recommended action: {{ nextMoodleDeadline ? 'Start with related course materials.' : 'Review the newest course materials.' }}</span>
+      </div>
+
+      <div v-if="selectedMoodleCourse" class="moodle-tabs">
+        <button type="button" :class="{ active: moodleActiveTab === 'materials' }" @click="moodleActiveTab = 'materials'">Course Materials</button>
+        <button type="button" :class="{ active: moodleActiveTab === 'grades' }" @click="moodleActiveTab = 'grades'">Grades / Notes</button>
+        <button type="button" :class="{ active: moodleActiveTab === 'deadlines' }" @click="moodleActiveTab = 'deadlines'">Deadlines</button>
+      </div>
+
+      <section v-if="selectedMoodleCourse && moodleActiveTab === 'materials'" class="moodle-tab-panel">
+        <p v-if="moodleError" class="moodle-overview-error">{{ moodleError }}</p>
+        <p v-else-if="moodleLoading" class="moodle-overview-empty">Loading course materials...</p>
+        <p v-else-if="moodleHasLoaded && moodleOverview.length === 0" class="moodle-overview-empty">No materials found.</p>
+        <div v-if="moodleOverview.length" class="moodle-sections">
+          <article v-for="(section, sectionIdx) in moodleOverview" :key="section.section_name + '-' + sectionIdx" class="moodle-section-card">
+            <div class="moodle-section-head">
+              <h4>{{ section.section_name }}</h4>
+              <span>{{ section.items.length }} items</span>
+            </div>
+            <div v-if="section.items.length" class="moodle-items">
+              <div v-for="(item, idx) in section.items" :key="section.section_name + '-' + sectionIdx + '-' + idx" class="moodle-item">
+                <span :class="['moodle-badge', moodleBadgeClass(item)]">{{ moodleBadgeLabel(item) }}</span>
+                <div class="moodle-item-main">
+                  <div class="moodle-item-name">{{ item.name }}</div>
+                  <div class="moodle-item-meta">
+                    <span v-if="item.filename">{{ item.filename }}</span>
+                    <span v-if="item.filesize">{{ formatFileSize(item.filesize) }}</span>
+                    <span v-if="item.due_date" class="moodle-deadline">Due {{ formatMoodleDate(item.due_date) }}</span>
+                  </div>
+                </div>
+                <div class="moodle-item-actions">
+                  <button
+                    v-if="item.filename"
+                    type="button"
+                    class="moodle-open-btn"
+                    @click="askMoodleMaterial(item)"
+                  >Ask AI</button>
+                  <a
+                    v-if="moodleItemUrl(item)"
+                    class="moodle-open-btn"
+                    :href="moodleItemUrl(item)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Open</a>
+                </div>
+              </div>
+            </div>
+            <p v-else class="moodle-section-empty">No files or activities in this section.</p>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="selectedMoodleCourse && moodleActiveTab === 'grades'" class="moodle-tab-panel">
+        <p v-if="moodleGradesError" class="moodle-overview-error">{{ moodleGradesError }}</p>
+        <p v-else-if="moodleGradesLoading" class="moodle-overview-empty">Loading grades...</p>
+        <p v-else-if="moodleGradesLoaded && moodleGrades.length === 0" class="moodle-overview-empty">No grades available for this course yet.</p>
+        <div v-if="moodleGrades.length" class="moodle-grade-grid">
+          <article v-for="(grade, idx) in moodleGrades" :key="grade.name + '-' + idx" class="moodle-grade-card">
+            <div class="moodle-grade-head">
+              <h4>{{ grade.name }}</h4>
+              <span v-if="grade.type">{{ grade.type }}</span>
+            </div>
+            <div class="moodle-grade-lines">
+              <span v-if="grade.grade">Grade: <strong>{{ grade.grade }}</strong></span>
+              <span v-if="grade.max_grade">Max: {{ grade.max_grade }}</span>
+              <span v-if="grade.percentage">Percentage: {{ grade.percentage }}</span>
+            </div>
+            <p v-if="grade.feedback" class="moodle-grade-feedback">{{ grade.feedback }}</p>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="selectedMoodleCourse && moodleActiveTab === 'deadlines'" class="moodle-tab-panel">
+        <p v-if="moodleDeadlinesError" class="moodle-overview-error">{{ moodleDeadlinesError }}</p>
+        <p v-else-if="moodleDeadlinesLoading" class="moodle-overview-empty">Loading deadlines...</p>
+        <p v-else-if="moodleDeadlinesLoaded && sortedMoodleDeadlines.length === 0" class="moodle-overview-empty">No Moodle deadlines found for this course.</p>
+        <div v-if="sortedMoodleDeadlines.length" class="moodle-deadline-grid">
+          <article v-for="(deadline, idx) in sortedMoodleDeadlines" :key="deadline.name + '-' + idx" class="moodle-deadline-card">
+            <div class="moodle-deadline-head">
+              <h4>📅 {{ deadline.name }}</h4>
+              <span :class="['moodle-deadline-priority', moodleDeadlinePriorityClass(deadline.due_date)]">{{ getDeadlineStatus(deadline.due_date) }}</span>
+            </div>
+            <div class="moodle-deadline-lines">
+              <span>Course: {{ selectedMoodleCourse.fullname }}</span>
+              <span>Section: {{ deadline.section_name }}</span>
+              <span>Due: {{ deadline.due_date ? formatMoodleDate(deadline.due_date) : 'No date' }}</span>
+              <span>Status: {{ formatMoodleStatus(deadline.status) }}</span>
+            </div>
+            <a
+              v-if="deadline.open_url || deadline.url"
+              class="moodle-open-btn"
+              :href="deadline.open_url || deadline.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Open</a>
+          </article>
+        </div>
+      </section>
+
+    </section>
     <!-- CHAT AREA -->
-    <main class="chat-area" ref="chatArea">
+    <main v-else class="chat-area" ref="chatArea">
       <div class="messages">
 
         <div v-if="messages.length === 0" class="welcome">
@@ -874,6 +1042,7 @@
               </div>
             </div>
           </div>
+
         </div>
 
         <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
@@ -905,7 +1074,7 @@
         </label>
         <textarea
           v-model="prompt"
-          :placeholder="isListening ? 'Höre zu…' : 'Frage eingeben…'"
+          :placeholder="chatInputPlaceholder"
           @keydown.enter.exact.prevent="sendPrompt"
           @input="resizeTextarea"
           ref="textarea"
@@ -989,6 +1158,84 @@ const UiIcon = {
 
 marked.use({ breaks: true })
 
+const semesterCourseKeywords = {
+  1: [
+    'Grundlagen der Programmierung',
+    'Rechnernetze',
+    'Einführung in die BWL',
+    'Einführung in die VWL',
+    'Einführung in die Wirtschaftsinformatik',
+    'Grundlagen des Software-Engineering',
+    'Mathematik',
+  ],
+  2: [
+    'Angewandte Programmierung',
+    'Datenmodellierung',
+    'Datenbanksysteme',
+    'Unternehmens- und Personalmanagement',
+    'Buchführung und Bilanzen',
+    'Grundlagen Projektmanagement',
+    'Geschäftsprozesse',
+    'betriebliche Anwendungen',
+  ],
+  3: [
+    'Webtechnologien',
+    'Datenbanktechnologien',
+    'Controlling',
+    'Modellierung von Anwendungssystemen',
+    'Statistik',
+    'Fremdsprache',
+  ],
+  4: [
+    'Investition und Finanzierung',
+    'Wahlpflichtmodul Soft Skills',
+    'Konfliktmanagement',
+    'Fachpraktikum',
+    'Praktikum',
+  ],
+  5: [
+    'Verteilte Anwendungen',
+    'Produktionswirtschaft',
+    'Logistik',
+    'Unternehmenssoftware',
+    'Wahlpflichtmodul Informatik',
+    'AWE',
+    'Life-Hacking',
+    'Fremdsprache',
+  ],
+  6: [
+    'Bachelorarbeit',
+    'Bachelorseminar',
+    'Abschlusskolloquium',
+    'Wahlpflichtmodul Wirtschaftsinformatik',
+    'Ausgewählte Themen der Wirtschaftsinformatik',
+    'AWE-Modul 2',
+  ],
+}
+
+function detectCourseSemester(course) {
+  const text = `${course.fullname || ''} ${course.shortname || ''}`.toLowerCase()
+
+  for (const [semester, keywords] of Object.entries(semesterCourseKeywords)) {
+    if (keywords.some(keyword => text.includes(keyword.toLowerCase()))) {
+      return Number(semester)
+    }
+  }
+
+  return 'other'
+}
+
+const moodleSemesterFilters = [
+  { value: 'all', label: 'All' },
+  { value: 1, label: 'Semester 1' },
+  { value: 2, label: 'Semester 2' },
+  { value: 3, label: 'Semester 3' },
+  { value: 4, label: 'Semester 4' },
+  { value: 5, label: 'Semester 5' },
+  { value: 6, label: 'Semester 6' },
+  { value: 'other', label: 'Sonstiges / AWE / Wahlpflicht' },
+]
+
 export default {
   components: { UiIcon },
   data() {
@@ -1007,6 +1254,7 @@ export default {
       ],
       uploading: false,
       activePanel: null,
+      mainView: 'chat',
       uploadStatus: '',
       isListening: false,
       speechSupported: false,
@@ -1018,6 +1266,26 @@ export default {
         { value: 'en-GB', label: 'English (UK)' },
         { value: 'de-DE', label: 'Deutsch' }
       ],
+      moodleCourses: [],
+      moodleCoursesLoading: false,
+      moodleCoursesError: '',
+      moodleCoursesLoaded: false,
+      moodleSemesterFilter: 'all',
+      moodleCourseSearch: '',
+      selectedMoodleCourse: null,
+      moodleActiveTab: 'materials',
+      moodleLoading: false,
+      moodleError: '',
+      moodleOverview: [],
+      moodleHasLoaded: false,
+      moodleGrades: [],
+      moodleGradesLoading: false,
+      moodleGradesError: '',
+      moodleGradesLoaded: false,
+      moodleDeadlines: [],
+      moodleDeadlinesLoading: false,
+      moodleDeadlinesError: '',
+      moodleDeadlinesLoaded: false,
       lsfSyncing: false,
       lsfSyncStatus: null,
       careerAnalysis: null,
@@ -1087,6 +1355,13 @@ export default {
           entries: []
         },
         {
+          id: 'moodle',
+          label: 'Moodle',
+          icon: '📚',
+          iconName: 'book',
+          entries: []
+        },
+        {
           id: 'profil',
           label: 'Profil',
           icon: '👤',
@@ -1136,13 +1411,14 @@ export default {
       const mm = String(d.getMonth() + 1).padStart(2, '0')
       const hh = String(d.getHours()).padStart(2, '0')
       const min = String(d.getMinutes()).padStart(2, '0')
+      const sec = String(d.getSeconds()).padStart(2, '0')
       return {
         date: `${days[d.getDay()]}, ${dd}.${mm}.${d.getFullYear()}`,
-        time: `${hh}:${min}`,
+        time: `${hh}:${min}:${sec}`,
       }
     },
     nextClass() {
-      // Reactive: re-evaluates every minute when currentTime ticks.
+      // Reactive: re-evaluates every second when currentTime ticks.
       // Reads from calendarEvents already loaded by fetchCalendarEvents().
       return this.calendarEvents
         .filter(e => new Date(e.start_time) > this.currentTime)
@@ -1167,6 +1443,57 @@ export default {
       if (!this.gradesData?.courses) return []
       const parse = g => parseFloat((g || '').replace(',', '.')) || Infinity
       return [...this.gradesData.courses].sort((a, b) => parse(a.grade) - parse(b.grade))
+    },
+    moodleSemesterFilters() {
+      return moodleSemesterFilters
+    },
+    filteredMoodleCourses() {
+      const q = this.moodleCourseSearch.trim().toLowerCase()
+      return this.moodleCourses
+        .map(course => ({ ...course, detectedSemester: detectCourseSemester(course) }))
+        .filter(course => (
+          this.moodleSemesterFilter === 'all' ||
+          course.detectedSemester === this.moodleSemesterFilter
+        ))
+        .filter(course => {
+          if (!q) return true
+          return [
+            course.fullname,
+            course.shortname,
+            String(course.id || ''),
+          ].some(value => String(value || '').toLowerCase().includes(q))
+        })
+    },
+    moodleEmptyMessage() {
+      if (this.moodleCourseSearch.trim()) {
+        return 'No Moodle courses match your search.'
+      }
+      if (typeof this.moodleSemesterFilter === 'number') {
+        return `No Moodle courses found for Semester ${this.moodleSemesterFilter}. You may not be enrolled in this semester yet.`
+      }
+      if (this.moodleSemesterFilter === 'other') {
+        return 'No Moodle courses found for Sonstiges / AWE / Wahlpflicht.'
+      }
+      return 'No courses found.'
+    },
+    sortedMoodleDeadlines() {
+      return [...this.moodleDeadlines].sort((a, b) => {
+        if (!a.due_date && !b.due_date) return 0
+        if (!a.due_date) return 1
+        if (!b.due_date) return -1
+        return new Date(a.due_date) - new Date(b.due_date)
+      })
+    },
+    nextMoodleDeadline() {
+      const now = new Date()
+      return this.sortedMoodleDeadlines.find(d => d.due_date && new Date(d.due_date) >= now) || null
+    },
+    chatInputPlaceholder() {
+      if (this.isListening) return 'Höre zu…'
+      if (this.mainView === 'moodle' && this.selectedMoodleCourse) {
+        return 'Frage zum ausgewählten Moodle-Kurs…'
+      }
+      return 'Frage eingeben…'
     },
     bestCareerMatch() {
       return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
@@ -1315,7 +1642,7 @@ export default {
     this.fetchTutorDocuments()
     this.fetchGrades()
     this.fetchCareerAnalysis()
-    this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 60000)
+    this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 1000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
     if (this.speechSupported) {
@@ -1337,12 +1664,189 @@ export default {
       localStorage.setItem('darkMode', this.isDark)
     },
     togglePanel(id) {
+      this.mainView = 'chat'
       this.activePanel = this.activePanel === id ? null : id
       if (this.activePanel === 'profil') { this.fetchProfile(); this.fetchCurriculumStatus() }
       if (this.activePanel === 'career' && this.cvStatus === null) this.fetchCvStatus()
     },
+    openMoodlePage() {
+      this.mainView = 'moodle'
+      this.activePanel = null
+      if (!this.moodleCoursesLoaded && !this.moodleCoursesLoading) this.loadMoodleCourses()
+    },
     closePanel() {
       this.activePanel = null
+    },
+    async loadMoodleCourses(force = false) {
+      if (this.moodleCoursesLoading) return
+      if (this.moodleCoursesLoaded && !force) return
+      this.moodleCoursesLoading = true
+      this.moodleCoursesError = ''
+      try {
+        const res = await fetch('/api/moodle/courses')
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleCoursesError = data?.detail || 'Could not load Moodle courses.'
+          return
+        }
+        this.moodleCourses = Array.isArray(data) ? data : []
+        this.moodleCoursesLoaded = true
+      } catch {
+        this.moodleCoursesError = 'Could not load Moodle courses.'
+      } finally {
+        this.moodleCoursesLoading = false
+      }
+    },
+    async selectMoodleCourse(course) {
+      this.selectedMoodleCourse = course
+      this.moodleActiveTab = 'materials'
+      await Promise.all([
+        this.loadMoodleOverview(course.id),
+        this.loadMoodleGrades(course.id),
+        this.loadMoodleDeadlines(course.id),
+      ])
+    },
+    moodleCourseSemesterLabel(course) {
+      const semester = course.detectedSemester ?? detectCourseSemester(course)
+      return semester === 'other'
+        ? 'Sonstiges / AWE / Wahlpflicht'
+        : `Semester ${semester}`
+    },
+    async loadMoodleOverview(courseId = this.selectedMoodleCourse?.id) {
+      if (!courseId || this.moodleLoading) return
+      this.moodleLoading = true
+      this.moodleError = ''
+      this.moodleOverview = []
+      this.moodleHasLoaded = false
+      try {
+        const res = await fetch(`/api/moodle/course/${encodeURIComponent(courseId)}/overview`)
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleError = data?.detail || 'Could not load course materials.'
+          return
+        }
+        this.moodleOverview = Array.isArray(data) ? data : []
+        this.moodleHasLoaded = true
+      } catch {
+        this.moodleError = 'Could not load course materials.'
+      } finally {
+        this.moodleLoading = false
+      }
+    },
+    async loadMoodleGrades(courseId = this.selectedMoodleCourse?.id) {
+      if (!courseId || this.moodleGradesLoading) return
+      this.moodleGradesLoading = true
+      this.moodleGradesError = ''
+      this.moodleGrades = []
+      this.moodleGradesLoaded = false
+      try {
+        const res = await fetch(`/api/moodle/course/${encodeURIComponent(courseId)}/grades`)
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleGradesError = data?.detail || 'Could not load grades.'
+          return
+        }
+        this.moodleGrades = Array.isArray(data?.grades) ? data.grades : []
+        this.moodleGradesLoaded = true
+      } catch {
+        this.moodleGradesError = 'Could not load grades.'
+      } finally {
+        this.moodleGradesLoading = false
+      }
+    },
+    async loadMoodleDeadlines(courseId = this.selectedMoodleCourse?.id) {
+      if (!courseId || this.moodleDeadlinesLoading) return
+      this.moodleDeadlinesLoading = true
+      this.moodleDeadlinesError = ''
+      this.moodleDeadlines = []
+      this.moodleDeadlinesLoaded = false
+      try {
+        const res = await fetch(`/api/moodle/course/${encodeURIComponent(courseId)}/deadlines`)
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          this.moodleDeadlinesError = data?.detail || 'Could not load Moodle deadlines.'
+          return
+        }
+        this.moodleDeadlines = Array.isArray(data?.deadlines) ? data.deadlines : []
+        this.moodleDeadlinesLoaded = true
+      } catch {
+        this.moodleDeadlinesError = 'Could not load Moodle deadlines.'
+      } finally {
+        this.moodleDeadlinesLoading = false
+      }
+    },
+    moodleItemUrl(item) {
+      return item.open_url || item.fileurl || item.url || ''
+    },
+    moodleBadgeLabel(item) {
+      if (item.type === 'assignment' || item.modname === 'assign') return 'Assignment'
+      if (item.type === 'url' || item.modname === 'url') return 'URL'
+      const filename = (item.filename || '').toLowerCase()
+      const ext = filename.includes('.') ? filename.split('.').pop() : ''
+      if (ext) return ext.toUpperCase()
+      if (item.type === 'file') return 'File'
+      return item.modname || item.type || 'Item'
+    },
+    moodleBadgeClass(item) {
+      const label = this.moodleBadgeLabel(item).toLowerCase()
+      if (label === 'pdf') return 'moodle-badge--pdf'
+      if (label === 'pptx' || label === 'ppt') return 'moodle-badge--ppt'
+      if (label === 'zip') return 'moodle-badge--zip'
+      if (label === 'py') return 'moodle-badge--py'
+      if (label === 'url') return 'moodle-badge--url'
+      if (label === 'assignment') return 'moodle-badge--assignment'
+      return 'moodle-badge--file'
+    },
+    formatFileSize(bytes) {
+      const n = Number(bytes)
+      if (!Number.isFinite(n) || n <= 0) return ''
+      const units = ['B', 'KB', 'MB', 'GB']
+      let value = n
+      let unit = 0
+      while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024
+        unit++
+      }
+      return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+    },
+    formatMoodleDate(value) {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return value
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    },
+    formatMoodleDateShort(value) {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return value || ''
+      return date.toLocaleDateString(undefined, {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      })
+    },
+    getDeadlineStatus(dueDate) {
+      if (!dueDate) return 'No date'
+
+      const now = new Date()
+      const due = new Date(dueDate)
+      const diffDays = Math.ceil((due - now) / (1000 * 60 * 60 * 24))
+
+      if (diffDays < 0) return 'Overdue'
+      if (diffDays === 0) return 'Due today'
+      if (diffDays <= 7) return 'Due this week'
+      return 'Upcoming'
+    },
+    moodleDeadlinePriorityClass(dueDate) {
+      return 'priority-' + this.getDeadlineStatus(dueDate).toLowerCase().replace(/\s+/g, '-')
+    },
+    formatMoodleStatus(status) {
+      if (!status) return 'Unknown'
+      return String(status).charAt(0).toUpperCase() + String(status).slice(1)
     },
     _genChatId() {
       return (crypto.randomUUID && crypto.randomUUID()) || ('chat-' + Date.now() + '-' + Math.random().toString(16).slice(2))
@@ -1424,10 +1928,12 @@ export default {
       this.tutorSelectedDocs = []
       this.uploadStatus = ''
       this.activePanel = null
+      this.mainView = 'chat'
       this.fetchTutorDocuments()
     },
     switchChat(id) {
       this.activePanel = null
+      this.mainView = 'chat'
       if (id === this.chatId) return
       this.saveMessages()              // aktuellen Chat sichern
       this.chatId = id
@@ -1655,10 +2161,50 @@ export default {
       const lower = text.toLowerCase()
       return keywords.some(kw => lower.includes(kw))
     },
+    buildMoodleChatContext() {
+      if (!this.selectedMoodleCourse) return null
+      return {
+        course_id: this.selectedMoodleCourse.id,
+        course_name: this.selectedMoodleCourse.fullname,
+        course_shortname: this.selectedMoodleCourse.shortname,
+        active_tab: this.moodleActiveTab,
+        sections: (this.moodleOverview || []).map(section => ({
+          section_name: section.section_name || '',
+          items: (section.items || []).map(item => ({
+            name: item.name || '',
+            filename: item.filename || '',
+            type: item.type || '',
+            modname: item.modname || '',
+            fileurl: item.fileurl || '',
+            open_url: item.open_url || '',
+            url: item.url || '',
+          })),
+        })),
+      }
+    },
+    isMoodlePromptQuestion(text, moodleContext = null) {
+      const lower = text.toLowerCase()
+      if (lower.includes('moodle')) return true
+      if (!moodleContext) return false
+      const materialKeywords = [
+        'session', 'slides', 'slide', 'folie', 'folien', 'ppt', 'pptx',
+        'pdf', 'material', 'materialien',
+      ]
+      return materialKeywords.some(kw => lower.includes(kw))
+    },
     // --- END STUDY ADVISOR keyword detection ---
 
     suggestPrompt(text) {
       this.prompt = text
+      this.$nextTick(() => {
+        this.resizeTextarea()
+        this.sendPrompt()
+      })
+    },
+    askMoodleMaterial(item) {
+      const label = item?.filename || item?.name
+      if (!label) return
+      this.prompt = `Erkläre ${label}`
       this.$nextTick(() => {
         this.resizeTextarea()
         this.sendPrompt()
@@ -1676,12 +2222,17 @@ export default {
       this.messages.push({ role: 'assistant', content: '' })
       this.loading = true
       this.maybeNameChat(userPrompt)
+      const moodleContext = this.buildMoodleChatContext()
+      const usePromptChat = this.isMoodlePromptQuestion(userPrompt, moodleContext)
+      if (this.mainView === 'moodle') {
+        this.mainView = 'chat'
+      }
 
       await this.$nextTick()
       this.scrollToBottom()
 
       // --- STUDY ADVISOR: route planner-related questions to the Study Advisor ---
-      if (this.isPlannerQuestion(userPrompt)) {
+      if (!usePromptChat && this.isPlannerQuestion(userPrompt)) {
         try {
           const res = await fetch('/api/ai/study-advisor', {
             method: 'POST',
@@ -1710,7 +2261,11 @@ export default {
         const res = await fetch('/api/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: userPrompt, chat_id: this.chatId })
+          body: JSON.stringify({
+            prompt: userPrompt,
+            chat_id: this.chatId,
+            ...(moodleContext ? { moodle_context: moodleContext } : {}),
+          })
         })
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -2861,9 +3416,502 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
 }
 .next-class-meta:last-child { margin-bottom: 0; }
 
+.moodle-overview {
+  max-width: 720px;
+  margin: 18px auto 0;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+}
+
+.moodle-overview--page {
+  width: min(920px, calc(100% - 48px));
+  max-width: 920px;
+  max-height: calc(100vh - 64px);
+  margin: 32px auto;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.moodle-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.moodle-overview-header h3 {
+  margin: 0 0 3px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.moodle-overview-header p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.moodle-overview-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.moodle-course-picker {
+  margin-top: 14px;
+}
+
+.moodle-course-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.moodle-refresh-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: var(--primary);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.moodle-refresh-btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--primary); }
+.moodle-refresh-btn:disabled { opacity: 0.6; cursor: default; }
+
+.moodle-filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.moodle-filter-tabs button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.moodle-filter-tabs button:hover,
+.moodle-filter-tabs button.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-course-search {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  background: var(--input-bg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.moodle-course-search:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.moodle-course-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.moodle-course-card {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.moodle-course-card:hover,
+.moodle-course-card.active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-course-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.moodle-course-short,
+.moodle-course-id,
+.moodle-course-semester {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.moodle-course-semester {
+  width: fit-content;
+  margin-top: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-selected {
+  display: grid;
+  gap: 2px;
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.moodle-selected strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.moodle-selected-label {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.moodle-next-deadline {
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.moodle-study-focus {
+  display: grid;
+  gap: 3px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--primary-dim);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.moodle-study-focus strong {
+  color: var(--text);
+}
+
+.moodle-study-focus-label {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.moodle-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.moodle-tabs button {
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.moodle-tabs button.active {
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.moodle-tab-panel {
+  margin-top: 12px;
+}
+
+.moodle-overview-error {
+  margin: 10px 0 0;
+  color: #ef4444;
+  font-size: 13px;
+}
+
+.moodle-overview-empty,
+.moodle-section-empty {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.moodle-sections {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.moodle-section-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.moodle-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.moodle-section-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.moodle-section-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.moodle-items {
+  display: grid;
+  gap: 7px;
+}
+
+.moodle-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.moodle-badge {
+  min-width: 58px;
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  font-family: 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.moodle-badge--pdf { background: #dc2626; }
+.moodle-badge--ppt { background: #d97706; }
+.moodle-badge--zip { background: #6d28d9; }
+.moodle-badge--py { background: #2563eb; }
+.moodle-badge--url { background: #059669; }
+.moodle-badge--assignment { background: #be185d; }
+.moodle-badge--file { background: #475569; }
+
+.moodle-item-main {
+  min-width: 0;
+}
+
+.moodle-item-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.moodle-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.moodle-item-meta span:not(:last-child)::after {
+  content: "·";
+  margin-left: 6px;
+  color: var(--border);
+}
+
+.moodle-deadline {
+  color: #be185d;
+  font-weight: 600;
+}
+
+.moodle-item-actions {
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.moodle-open-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: var(--primary);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.moodle-open-btn:hover { background: var(--surface-hover); border-color: var(--primary); }
+
+.moodle-grade-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.moodle-grade-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.moodle-grade-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.moodle-grade-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.moodle-grade-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.moodle-grade-lines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.moodle-grade-lines strong { color: var(--text); }
+
+.moodle-grade-feedback {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.moodle-deadline-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.moodle-deadline-card {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.moodle-deadline-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.moodle-deadline-head h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.moodle-deadline-priority {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.priority-overdue { background: #dc2626; }
+.priority-due-today { background: #d97706; }
+.priority-due-this-week { background: #7c3aed; }
+.priority-upcoming { background: #059669; }
+.priority-no-date { background: #64748b; }
+
+.moodle-deadline-lines {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* 2 columns on medium screens */
 @media (max-width: 660px) {
   .welcome-card { flex: 1 1 calc(50% - 5px); max-width: calc(50% - 5px); }
+  .moodle-overview--page { width: calc(100% - 28px); margin: 18px auto; padding: 14px; }
+  .moodle-tabs { display: flex; width: 100%; }
+  .moodle-tabs button { flex: 1; }
+  .moodle-item { grid-template-columns: auto minmax(0, 1fr); }
+  .moodle-item-actions { grid-column: 2; justify-content: flex-start; }
+  .moodle-open-btn { width: fit-content; }
 }
 /* 1 column on small screens */
 @media (max-width: 420px) {
@@ -4533,57 +5581,79 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .cv-hint { font-size: 11px; color: var(--text-muted); margin: 6px 0 0; line-height: 1.4; }
 
 /* ── Kalender (Tag/Woche/Monat) ──────────────────────────────────── */
-.dropdown--calendar { width: 640px; max-width: calc(100vw - 280px); }
+.dropdown--calendar { width: 860px; max-width: calc(100vw - 280px); }
 
-.cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.cal-views { display: inline-flex; background: var(--surface-hover); border-radius: 8px; padding: 2px; }
-.cal-view-btn { border: none; background: none; padding: 5px 12px; border-radius: 6px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
-.cal-view-btn.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-.cal-nav { display: inline-flex; align-items: center; gap: 4px; }
-.cal-nav-btn { width: 28px; height: 28px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; cursor: pointer; font-size: 16px; color: var(--text); line-height: 1; }
-.cal-nav-btn:hover { background: var(--surface-hover); }
-.cal-today-btn { padding: 5px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--text); }
-.cal-today-btn:hover { background: var(--surface-hover); }
-.cal-period { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 8px; text-align: center; }
+.cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.cal-views { display: inline-flex; background: var(--surface-hover); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+.cal-view-btn { border: none; background: none; padding: 7px 16px; border-radius: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-muted); cursor: pointer; }
+.cal-view-btn:hover { color: var(--text); background: var(--surface); }
+.cal-view-btn.active { background: var(--surface); color: var(--primary); font-weight: 700; box-shadow: var(--shadow); }
+.cal-nav { display: inline-flex; align-items: center; gap: 6px; }
+.cal-nav-btn { width: 34px; height: 34px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; cursor: pointer; font-size: 20px; color: var(--text); line-height: 1; }
+.cal-nav-btn:hover { background: var(--surface-hover); border-color: var(--primary); color: var(--primary); }
+.cal-today-btn { padding: 7px 14px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text); }
+.cal-today-btn:hover { background: var(--surface-hover); border-color: var(--primary); color: var(--primary); }
+.cal-period { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 10px; text-align: center; }
 
 /* Monat */
-.cal-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
-.cal-weekday { font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; padding: 2px 0; }
+.cal-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cal-weekday { font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: center; padding: 4px 0; }
 .cal-cell {
-  min-height: 74px; border: 1px solid var(--border); border-radius: 7px; padding: 4px;
-  cursor: pointer; display: flex; flex-direction: column; gap: 2px; overflow: hidden;
+  min-height: 118px; border: 1px solid var(--border); border-radius: 9px; padding: 8px;
+  cursor: pointer; display: flex; flex-direction: column; gap: 6px; overflow: hidden;
   background: var(--surface); transition: background 0.12s;
 }
-.cal-cell:hover { background: var(--surface-hover); }
+.cal-cell:hover { background: var(--surface-hover); border-color: var(--primary); }
 .cal-cell--out { opacity: 0.4; }
 .cal-cell--today { border-color: var(--primary); }
-.cal-cell-num { font-size: 12px; font-weight: 600; color: var(--text); align-self: flex-end; }
-.cal-cell--today .cal-cell-num { background: var(--primary); color: #fff; border-radius: 50%; width: 18px; height: 18px; display: grid; place-items: center; }
-.cal-cell-events { display: flex; flex-direction: column; gap: 2px; }
-.cal-chip { font-size: 10px; padding: 1px 4px; border-radius: 4px; background: var(--primary-dim); color: var(--primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cal-more { font-size: 10px; color: var(--text-muted); }
+.cal-cell-num { font-size: 13px; font-weight: 700; color: var(--text); align-self: flex-end; }
+.cal-cell--today .cal-cell-num { background: var(--primary); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; }
+.cal-cell-events { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cal-chip {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--primary-dim);
+  color: var(--primary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.cal-more {
+  width: fit-content;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
 
 /* Woche */
-.cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-.cal-week-col { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; min-height: 120px; background: var(--surface); }
+.cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; }
+.cal-week-col { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; min-height: 220px; background: var(--surface); }
 .cal-week-col--today { border-color: var(--primary); }
-.cal-week-head { padding: 5px; text-align: center; cursor: pointer; background: var(--surface-hover); }
-.cal-week-dow { display: block; font-size: 11px; color: var(--text-muted); }
-.cal-week-date { font-size: 13px; font-weight: 600; color: var(--text); }
-.cal-week-events { padding: 4px; display: flex; flex-direction: column; gap: 3px; }
-.cal-week-empty { font-size: 11px; color: var(--text-muted); text-align: center; }
-.cal-event { font-size: 10.5px; padding: 3px 5px; border-radius: 5px; background: var(--primary-dim); display: flex; flex-direction: column; }
-.cal-event-time { font-weight: 600; color: var(--primary); }
-.cal-event-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-week-head { padding: 8px; text-align: center; cursor: pointer; background: var(--surface-hover); border-bottom: 1px solid var(--border); }
+.cal-week-dow { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.cal-week-date { font-size: 15px; font-weight: 700; color: var(--text); }
+.cal-week-events { padding: 8px; display: flex; flex-direction: column; gap: 7px; }
+.cal-week-empty { font-size: 12px; color: var(--text-muted); text-align: center; padding: 10px 0; }
+.cal-event { font-size: 12px; line-height: 1.35; padding: 7px 8px; border: 1px solid transparent; border-radius: 7px; background: var(--primary-dim); display: flex; flex-direction: column; gap: 2px; }
+.cal-event-time { font-weight: 700; color: var(--primary); }
+.cal-event-name { color: var(--text); overflow-wrap: anywhere; }
 
 /* Tag */
-.cal-day { display: flex; flex-direction: column; gap: 6px; }
-.cal-day-event { display: flex; gap: 10px; border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: 8px; padding: 8px 10px; }
-.cal-day-time { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--primary); min-width: 46px; }
+.cal-day { display: flex; flex-direction: column; gap: 10px; }
+.cal-day-event { display: flex; gap: 14px; border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.cal-day-time { display: flex; flex-direction: column; font-size: 13px; font-weight: 700; color: var(--primary); min-width: 56px; line-height: 1.35; }
 .cal-day-time-end { color: var(--text-muted); font-weight: 400; }
-.cal-day-body { display: flex; flex-direction: column; gap: 3px; }
-.cal-day-top { display: flex; align-items: center; gap: 6px; }
-.cal-day-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.cal-day-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cal-day-top { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.cal-day-name { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
 
 /* ── Career: Datenbasis ──────────────────────────────────────────── */
 .career-datasources { margin: 10px 0; padding: 10px 12px; background: var(--surface-hover); border: 1px solid var(--border); border-radius: 10px; }
@@ -4643,34 +5713,54 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .cal-add-save:disabled { opacity: 0.6; }
 .cal-add-cancel { padding: 7px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text-muted); font-size: 12.5px; cursor: pointer; }
 
-.cal-legend { display: flex; gap: 12px; margin-bottom: 8px; }
-.cal-legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
-.cal-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.cal-legend-item { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; background: var(--surface); font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.cal-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .cal-dot--class { background: #8b5cf6; }
 .cal-dot--user { background: #0ea5e9; }
 .cal-dot--deadline { background: #ef4444; }
 
 /* Event-Farben je Art */
-.cal-chip--class { background: var(--primary-dim); color: var(--primary); }
-.cal-chip--user { background: #e0f2fe; color: #0369a1; }
-.cal-chip--deadline { background: #fee2e2; color: #b91c1c; font-weight: 600; }
+.cal-chip--class { background: var(--primary-dim); color: var(--primary); border-left: 3px solid #8b5cf6; }
+.cal-chip--user { background: #e0f2fe; color: #0369a1; border-left: 3px solid #0ea5e9; }
+.cal-chip--deadline { background: #fee2e2; color: #b91c1c; border-left: 3px solid #ef4444; font-weight: 700; }
 .dark .cal-chip--user { background: #0c2a3a; color: #7dd3fc; }
 .dark .cal-chip--deadline { background: #2d1515; color: #fca5a5; }
 
 .cal-event--class .cal-event-time { color: var(--primary); }
-.cal-event--user { background: #e0f2fe; }
+.cal-event--user { background: #e0f2fe; border-color: #bae6fd; }
 .cal-event--user .cal-event-time { color: #0369a1; }
-.cal-event--deadline { background: #fee2e2; }
+.cal-event--deadline { background: #fee2e2; border-color: #fecaca; }
 .cal-event--deadline .cal-event-time { color: #b91c1c; }
 .dark .cal-event--user { background: #0c2a3a; }
 .dark .cal-event--deadline { background: #2d1515; }
 
 .cal-day-event--user { border-left-color: #0ea5e9; }
 .cal-day-event--deadline { border-left-color: #ef4444; }
-.cal-day-allday { font-size: 11px; color: var(--text-muted); }
+.cal-day-allday { font-size: 12px; color: var(--text-muted); }
 .cal-badge-user { background: #e0f2fe; color: #0369a1; }
-.cal-day-del { margin-top: 4px; align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; padding: 3px 8px; color: #dc2626; cursor: pointer; }
+.cal-day-del { margin-top: 4px; align-self: flex-start; background: none; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; padding: 5px 10px; color: #dc2626; cursor: pointer; }
 .cal-day-del:hover { background: #fee2e2; }
+
+@media (max-width: 920px) {
+  .dropdown--calendar { width: calc(100vw - 32px); max-width: calc(100vw - 32px); }
+  .cal-toolbar { align-items: stretch; flex-direction: column; }
+  .cal-nav { justify-content: space-between; }
+  .cal-month { gap: 4px; }
+  .cal-cell { min-height: 96px; padding: 6px; }
+  .cal-chip { font-size: 10.5px; padding: 3px 5px; -webkit-line-clamp: 1; }
+  .cal-week { grid-template-columns: repeat(7, minmax(96px, 1fr)); overflow-x: auto; padding-bottom: 4px; }
+}
+
+@media (max-width: 660px) {
+  .dropdown--calendar { width: calc(100vw - 24px); max-width: calc(100vw - 24px); }
+  .cal-view-btn { flex: 1; padding: 7px 8px; }
+  .cal-views { display: flex; width: 100%; }
+  .cal-cell { min-height: 84px; }
+  .cal-cell-num { font-size: 12px; }
+  .cal-day-event { flex-direction: column; gap: 8px; }
+  .cal-day-time { flex-direction: row; gap: 8px; min-width: 0; }
+}
 
 /* ── Planner: Lernplan-Generator ─────────────────────────────────── */
 .planner-plan-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 10px 12px; margin-bottom: 10px; border: none; border-radius: 9px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }

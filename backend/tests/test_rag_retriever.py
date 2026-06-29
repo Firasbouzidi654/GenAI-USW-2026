@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.rag import retriever
-from app.rag.retriever import _format_context, retrieve_context
+from app.rag.retriever import _format_context, has_indexed_source, retrieve_context
 
 
 # ---------------------------------------------------------------------------
@@ -103,3 +103,50 @@ async def test_retrieve_context_swallows_query_errors():
          patch.object(retriever, "embed_texts", return_value=[[0.1]]):
         result = await retrieve_context("frage")
     assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_retrieve_context_applies_metadata_filter():
+    fake_collection = MagicMock()
+    fake_collection.query.return_value = {
+        "documents": [["Moodle chunk"]],
+        "metadatas": [[{"source": "session1.pdf", "course_id": 58776, "moodle": "1"}]],
+    }
+    with patch.object(retriever, "get_collection", return_value=fake_collection), \
+         patch.object(retriever, "embed_texts", return_value=[[0.1]]):
+        result = await retrieve_context(
+            "Session 1",
+            source_filter=["session1.pdf"],
+            metadata_filter={"moodle": "1", "course_id": 58776},
+        )
+
+    kwargs = fake_collection.query.call_args.kwargs
+    assert kwargs["where"] == {
+        "$and": [
+            {"source": {"$eq": "session1.pdf"}},
+            {"moodle": {"$eq": "1"}},
+            {"course_id": {"$eq": 58776}},
+        ]
+    }
+    assert "Moodle chunk" in result
+
+
+def test_has_indexed_source_checks_metadata_scope():
+    fake_collection = MagicMock()
+    fake_collection.get.return_value = {"ids": ["chunk-1"]}
+    with patch.object(retriever, "get_collection", return_value=fake_collection):
+        exists = has_indexed_source(
+            "slides.pptx",
+            user_id="local",
+            metadata_filter={"moodle": "1", "course_id": 58776},
+        )
+
+    assert exists is True
+    assert fake_collection.get.call_args.kwargs["where"] == {
+        "$and": [
+            {"source": {"$eq": "slides.pptx"}},
+            {"user_id": {"$eq": "local"}},
+            {"moodle": {"$eq": "1"}},
+            {"course_id": {"$eq": 58776}},
+        ]
+    }

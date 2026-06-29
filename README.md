@@ -263,15 +263,3 @@ The application integrates with Moodle Web Services to retrieve course materials
 | `core_course_get_contents`          | Retrieve course sections, files, assignments, and resources |
 | `core_calendar_get_calendar_events` | Retrieve deadlines and calendar events                      |
 
-## Planned APIs
-
-| API Function                                       | Purpose                                         |
-| -------------------------------------------------- | ----------------------------------------------- |
-| `mod_assign_get_assignments`                       | Retrieve assignment information                 |
-| `mod_assign_get_submission_status`                 | Check assignment submission status              |
-| `gradereport_user_get_grade_items`                 | Display grades and feedback                     |
-| `core_completion_get_activities_completion_status` | Track course progress                           |
-| `core_calendar_get_calendar_upcoming_view`         | Generate smart notifications and upcoming tasks |
-| `mod_quiz_get_user_attempts`                       | Display quiz history                            |
-| `mod_quiz_get_quizzes_by_courses`                  | Retrieve available quizzes                      |
-

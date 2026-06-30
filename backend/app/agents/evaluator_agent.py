@@ -16,7 +16,7 @@ from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm
+from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback
 from app.models.attempt_answer import AttemptAnswer
 from app.models.curriculum import CurriculumModule
 from app.models.quiz import Quiz
@@ -72,7 +72,7 @@ def _match_module(modules: list, name: str):
     return best if best_overlap else None
 
 
-def create_evaluator_agent(db: AsyncSession):
+def create_evaluator_agent(db: AsyncSession, llm=None):
     """Erstellt einen EvaluatorAgent (LangGraph CompiledStateGraph)."""
 
     @tool
@@ -274,7 +274,7 @@ def create_evaluator_agent(db: AsyncSession):
         """
         return await get_moodle_grades_context(course_name or None)
 
-    llm = get_llm(temperature=0.3)
+    llm = llm or get_llm(temperature=0.3)
     return create_agent(
         model=llm,
         tools=[
@@ -292,9 +292,12 @@ def create_evaluator_agent(db: AsyncSession):
 
 async def run_evaluator_agent(message: str, db: AsyncSession) -> str:
     """Führt den EvaluatorAgent aus und gibt eine Wissenslücken-Analyse zurück."""
-    agent = create_evaluator_agent(db)
     try:
-        result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
+        result = await run_agent_with_model_fallback(
+            lambda llm: create_evaluator_agent(db, llm=llm),
+            {"messages": [HumanMessage(content=message)]},
+            temperature=0.3,
+        )
         return extract_text_output(result) or "Die Analyse konnte nicht abgeschlossen werden."
     except Exception as exc:
         logger.error("EvaluatorAgent fehlgeschlagen: %s", exc)

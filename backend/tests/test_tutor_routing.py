@@ -24,7 +24,10 @@ async def test_general_programming_question_uses_direct_tutor_path(monkeypatch):
     create_agent = MagicMock()
     retrieve_context = AsyncMock()
 
-    monkeypatch.setattr(tutor_agent, "get_llm", lambda temperature=0.0: fake_llm)
+    async def fake_invoke(messages, temperature=0.0):
+        return await fake_llm.ainvoke(messages)
+
+    monkeypatch.setattr(tutor_agent, "ainvoke_with_model_fallback", fake_invoke)
     monkeypatch.setattr(tutor_agent, "create_tutor_agent", create_agent)
     monkeypatch.setattr(tutor_agent, "retrieve_context", retrieve_context)
 
@@ -59,7 +62,10 @@ async def test_selected_moodle_session_uses_filtered_rag_path(monkeypatch):
     retrieve_context = AsyncMock(return_value="[Quelle 1 - session1.pdf]\nKontext")
     create_agent = MagicMock()
 
-    monkeypatch.setattr(tutor_agent, "get_llm", lambda temperature=0.0: fake_llm)
+    async def fake_invoke(messages, temperature=0.0):
+        return await fake_llm.ainvoke(messages)
+
+    monkeypatch.setattr(tutor_agent, "ainvoke_with_model_fallback", fake_invoke)
     monkeypatch.setattr(tutor_agent, "retrieve_context", retrieve_context)
     monkeypatch.setattr(tutor_agent, "create_tutor_agent", create_agent)
 
@@ -105,7 +111,10 @@ async def test_selected_moodle_material_indexes_on_demand_when_missing(monkeypat
 
     monkeypatch.setattr(tutor_agent, "retrieve_context", retrieve_context)
     monkeypatch.setattr(tutor_agent, "has_indexed_source", lambda *args, **kwargs: False)
-    monkeypatch.setattr(tutor_agent, "get_llm", lambda temperature=0.0: fake_llm)
+    async def fake_invoke(messages, temperature=0.0):
+        return await fake_llm.ainvoke(messages)
+
+    monkeypatch.setattr(tutor_agent, "ainvoke_with_model_fallback", fake_invoke)
     monkeypatch.setattr("app.services.moodle_service.download_file_text", download_file_text)
     monkeypatch.setattr("app.rag.pipeline.index_text", index_text)
 
@@ -213,12 +222,11 @@ async def test_moodle_pptx_download_index_and_explain_integration(monkeypatch):
 
             return [i for i, meta in enumerate(self.metadatas) if match_condition(meta, where)]
 
-    class _EchoLlm:
-        async def ainvoke(self, messages):
-            content = messages[-1].content
-            assert "Promise Grundlagen" in content
-            assert "Async Await" in content
-            return AIMessage(content="Promises und Async/Await aus den Folien erklaert.")
+    async def fake_invoke(messages, temperature=0.0):
+        content = messages[-1].content
+        assert "Promise Grundlagen" in content
+        assert "Async Await" in content
+        return AIMessage(content="Promises und Async/Await aus den Folien erklaert.")
 
     collection = _MemoryCollection()
 
@@ -228,7 +236,7 @@ async def test_moodle_pptx_download_index_and_explain_integration(monkeypatch):
     monkeypatch.setattr(retriever, "get_collection", lambda: collection)
     monkeypatch.setattr(pipeline, "embed_texts", lambda texts: [[0.1] for _ in texts])
     monkeypatch.setattr(retriever, "embed_texts", lambda texts: [[0.1] for _ in texts])
-    monkeypatch.setattr(tutor_agent, "get_llm", lambda temperature=0.0: _EchoLlm())
+    monkeypatch.setattr(tutor_agent, "ainvoke_with_model_fallback", fake_invoke)
 
     result = await tutor_agent.run_tutor_agent(
         "Erkläre sample.pptx",

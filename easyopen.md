@@ -6,6 +6,7 @@ docker compose up -d
 
 ### 1. Backend 
 ``` bash :
+cd backend
 uvicorn app.main:app --reload --port 8080
 
 ### . Frontend starten

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from langgraph.prebuilt import create_react_agent as create_agent
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -16,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm, run_with_model_fallback
+from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback, run_with_model_fallback
 from app.models.grade import Grade
 from app.services.moodle_context_service import get_moodle_grades_context, get_moodle_courses_context
 
@@ -88,6 +89,21 @@ Nutze alle verfügbaren Datenquellen, dann analysiere das Profil.
 Antworte auf Deutsch mit konkreten, motivierenden Empfehlungen.
 """.strip()
 
+_ANALYSIS_JSON_INSTRUCTIONS = """
+Antworte ausschliesslich mit einem validen JSON-Objekt ohne Markdown.
+Das JSON muss exakt diese Keys enthalten:
+- summary: string
+- confidence_percent: integer 0-100
+- job_fit_percent: integer 0-100
+- skills: array of objects with name, score, percent, reason, matched_courses
+- roles: array of objects with title, match_percent, reason, missing_skills,
+  recommended_certifications, recommended_projects, market_demand, salary_range_eur
+- strengths: array of strings
+- weak_areas: array of strings
+- recommended_learning_path: array of strings
+matched_courses muss eine Liste von Kursnamen als Strings sein.
+""".strip()
+
 
 # ── Hilfsfunktionen ──────────────────────────────────────────────────────────
 
@@ -126,9 +142,44 @@ def empty_analysis() -> dict:
     }
 
 
+def _response_to_text(response) -> str:
+    content = getattr(response, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return ""
+
+
+def _extract_json_object(text: str) -> dict | None:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text or ""):
+        try:
+            value, _end = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and "summary" in value and "skills" in value and "roles" in value:
+            return value
+    return None
+
+
+def _analysis_from_json_text(text: str) -> _CareerAnalysisSchema | None:
+    payload = _extract_json_object(text)
+    if not payload:
+        return None
+    try:
+        return _CareerAnalysisSchema.model_validate(payload)
+    except Exception as exc:
+        logger.warning("CareerAgent JSON-Fallback konnte nicht validiert werden: %s", exc)
+        return None
+
+
 # ── Agent-Factory ─────────────────────────────────────────────────────────────
 
-def create_career_agent(db: AsyncSession):
+def create_career_agent(db: AsyncSession, llm=None):
     """Erstellt einen CareerAgent für konversationelle Karriereberatung."""
 
     @tool
@@ -205,7 +256,7 @@ def create_career_agent(db: AsyncSession):
         """Listet alle belegten Moodle-Kurse des Studierenden."""
         return await get_moodle_courses_context()
 
-    llm = get_llm(temperature=0.2)
+    llm = llm or get_llm(temperature=0.2)
     return create_agent(
         model=llm,
         tools=[get_academic_transcript, get_strong_subjects, get_weak_subjects,
@@ -257,8 +308,24 @@ async def get_ai_career_analysis(
     try:
         result: _CareerAnalysisSchema = await run_with_model_fallback(_invoke, temperature=0.2)
     except Exception as exc:
-        logger.error("CareerAgent Analyse fehlgeschlagen: %s", exc)
-        raise RuntimeError("KI-Karriereanalyse fehlgeschlagen.") from exc
+        result = _analysis_from_json_text(str(exc))
+        if result is None:
+            async def _invoke_json(llm):
+                return await llm.ainvoke([
+                    SystemMessage(content=f"{_ANALYSIS_SYSTEM_PROMPT}\n\n{_ANALYSIS_JSON_INSTRUCTIONS}"),
+                    HumanMessage(content=user_prompt),
+                ])
+
+            try:
+                response = await run_with_model_fallback(_invoke_json, temperature=0.2)
+                result = _analysis_from_json_text(_response_to_text(response))
+            except Exception as json_exc:
+                logger.error("CareerAgent JSON-Fallback fehlgeschlagen: %s", json_exc)
+                result = None
+        if result is None:
+            logger.error("CareerAgent Analyse fehlgeschlagen: %s", exc)
+            raise RuntimeError("KI-Karriereanalyse fehlgeschlagen.") from exc
+        logger.warning("CareerAgent structured output failed; using parsed JSON fallback")
 
     skills_raw = [s.model_dump() for s in result.skills]
     enriched_skills = _enrich_matched_courses(skills_raw, courses)
@@ -285,9 +352,12 @@ async def get_ai_career_analysis(
 
 async def run_career_agent(message: str, db: AsyncSession) -> str:
     """Führt den CareerAgent für konversationelle Karriereberatung aus."""
-    agent = create_career_agent(db)
     try:
-        result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
+        result = await run_agent_with_model_fallback(
+            lambda llm: create_career_agent(db, llm=llm),
+            {"messages": [HumanMessage(content=message)]},
+            temperature=0.2,
+        )
         return extract_text_output(result) or "Die Karriereanalyse konnte nicht abgeschlossen werden."
     except Exception as exc:
         logger.error("CareerAgent fehlgeschlagen: %s", exc)

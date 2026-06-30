@@ -1,7 +1,7 @@
 """Shared LLM factory and helpers for all agents (LangChain 1.x / LangGraph)."""
 
 import logging
-from typing import Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -24,6 +24,24 @@ def get_llm(model: str | None = None, temperature: float = 0.0) -> ChatGoogleGen
     )
 
 
+def has_groq_fallback() -> bool:
+    return bool(settings.groq_api_key)
+
+
+def get_groq_llm(temperature: float = 0.0):
+    if not settings.groq_api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured.")
+    try:
+        from langchain_groq import ChatGroq
+    except ImportError as exc:
+        raise RuntimeError("langchain-groq is not installed.") from exc
+    return ChatGroq(
+        model=settings.groq_model,
+        api_key=settings.groq_api_key,
+        temperature=temperature,
+    )
+
+
 class AllGeminiModelsFailedError(RuntimeError):
     """Raised when every model in the configured fallback chain failed."""
 
@@ -34,7 +52,7 @@ def _is_auth_error(exc: Exception) -> bool:
 
 
 async def run_with_model_fallback(
-    call: Callable[[ChatGoogleGenerativeAI], Awaitable[T]],
+    call: Callable[[Any], Awaitable[T]],
     temperature: float = 0.0,
 ) -> T:
     """Runs `call` against each model in `settings.gemini_model_list`, in order.
@@ -45,26 +63,60 @@ async def run_with_model_fallback(
     (invalid/expired key) abort immediately since switching models with the
     same key would just fail the same way.
     """
+    # If Groq is configured, do one Gemini attempt and then switch providers
+    # immediately; without Groq, keep the Gemini-only model chain.
     last_exc: Exception | None = None
+    gemini_models = settings.gemini_model_list
+    if has_groq_fallback() and gemini_models:
+        gemini_models = gemini_models[:1]
 
-    for model_name in settings.gemini_model_list:
+    for model_name in gemini_models:
         try:
             result = await call(get_llm(model=model_name, temperature=temperature))
             logger.info("Gemini call succeeded using model '%s'.", model_name)
             return result
         except Exception as exc:
             if _is_auth_error(exc):
+                if has_groq_fallback():
+                    logger.warning("Gemini failed, using Groq fallback")
+                    return await call(get_groq_llm(temperature=temperature))
                 logger.error(
                     "Gemini auth error with model '%s' - aborting fallback chain: %s",
                     model_name, exc,
                 )
                 raise
+            if has_groq_fallback():
+                logger.warning("Gemini failed, using Groq fallback")
+                return await call(get_groq_llm(temperature=temperature))
             logger.warning("Gemini model '%s' failed, trying next model: %s", model_name, exc)
             last_exc = exc
+
+    if has_groq_fallback():
+        logger.warning("Gemini failed, using Groq fallback")
+        return await call(get_groq_llm(temperature=temperature))
 
     raise AllGeminiModelsFailedError(
         f"All configured Gemini models failed: {settings.gemini_model_list}"
     ) from last_exc
+
+
+async def ainvoke_with_model_fallback(messages: list, temperature: float = 0.0):
+    async def _invoke(llm):
+        return await llm.ainvoke(messages)
+
+    return await run_with_model_fallback(_invoke, temperature=temperature)
+
+
+async def run_agent_with_model_fallback(
+    build_agent: Callable[[Any], Any],
+    payload: dict,
+    temperature: float = 0.0,
+) -> dict:
+    async def _invoke(llm):
+        agent = build_agent(llm)
+        return await agent.ainvoke(payload)
+
+    return await run_with_model_fallback(_invoke, temperature=temperature)
 
 
 def _message_role(msg) -> str:

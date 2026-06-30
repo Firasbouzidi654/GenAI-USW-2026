@@ -23,6 +23,9 @@ class Settings(BaseSettings):
         "gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,"
         "gemini-1.5-flash,gemini-1.5-pro"
     )
+    # Optional Groq fallback. If GROQ_API_KEY is missing, the app stays Gemini-only.
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.1-8b-instant"
     # HTW Berlin IMAP mailbox (see app.services.imap_email_service)
     htw_email_address: str = ""
     htw_email_password: str = ""

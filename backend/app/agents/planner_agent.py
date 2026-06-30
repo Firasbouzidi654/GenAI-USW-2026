@@ -18,7 +18,7 @@ from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm
+from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback
 from app.models.academic_event import AcademicEvent
 from app.models.calendar_event import CalendarEvent
 from app.models.grade import Grade
@@ -190,7 +190,7 @@ def _format_raw_json_fallback(text: str) -> str:
     return _format_internal_payload(payload)
 
 
-def create_planner_agent(db: AsyncSession):
+def create_planner_agent(db: AsyncSession, llm=None):
     """Erstellt einen PlannerAgent (LangGraph CompiledStateGraph)."""
 
     @tool
@@ -317,7 +317,7 @@ def create_planner_agent(db: AsyncSession):
         """Listet alle belegten Moodle-Kurse des Studierenden."""
         return await get_moodle_courses_context()
 
-    llm = get_llm(temperature=0.3)
+    llm = llm or get_llm(temperature=0.3)
     return create_agent(
         model=llm,
         tools=[get_upcoming_deadlines, get_calendar_schedule, get_grade_summary,
@@ -328,9 +328,12 @@ def create_planner_agent(db: AsyncSession):
 
 async def run_planner_agent(message: str, db: AsyncSession) -> str:
     """Führt den PlannerAgent aus und gibt Lernplan-Empfehlungen zurück."""
-    agent = create_planner_agent(db)
     try:
-        result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
+        result = await run_agent_with_model_fallback(
+            lambda llm: create_planner_agent(db, llm=llm),
+            {"messages": [HumanMessage(content=message)]},
+            temperature=0.3,
+        )
         answer = extract_text_output(result)
         if answer and not _looks_like_raw_json(answer):
             return answer

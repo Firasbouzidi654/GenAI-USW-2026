@@ -8,6 +8,7 @@ chromadb
 langchain
 langchain-core
 langchain-google-genai>=2.0.0
+langchain-groq>=1.0.0
 langchain-text-splitters
 pypdf
 python-docx

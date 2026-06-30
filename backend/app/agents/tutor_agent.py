@@ -8,7 +8,9 @@ Für Quiz-Generierung wird `with_structured_output` eingesetzt.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from typing import Any
 
 from langgraph.prebuilt import create_react_agent as create_agent
@@ -18,7 +20,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm
+from app.agents.base import (
+    ainvoke_with_model_fallback,
+    extract_text_output,
+    get_llm,
+    run_agent_with_model_fallback,
+    run_with_model_fallback,
+)
 from app.models.document import Document
 from app.rag.retriever import has_indexed_source, retrieve_context
 
@@ -251,6 +259,18 @@ def _selected_moodle_course_label(moodle_context: dict | None) -> str:
     )
 
 
+def _llm_response_to_text(response) -> str:
+    content = getattr(response, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return ""
+
+
 async def _ensure_moodle_files_indexed(
     files: list[dict],
     moodle_context: dict,
@@ -358,9 +378,8 @@ async def _answer_from_selected_moodle_material(
         )
 
     source_note = f"\n\nAngefragte Datei(en): {', '.join(source_filter)}" if source_filter else ""
-    llm = get_llm(temperature=0.2)
     try:
-        response = await llm.ainvoke([
+        response = await ainvoke_with_model_fallback([
             SystemMessage(content=_MOODLE_RAG_SYSTEM_PROMPT),
             HumanMessage(
                 content=(
@@ -370,7 +389,7 @@ async def _answer_from_selected_moodle_material(
                     f"Moodle-Kontext:\n{context}"
                 )
             ),
-        ])
+        ], temperature=0.2)
         text = response.content if isinstance(response.content, str) else ""
         if isinstance(response.content, list):
             text = "".join(
@@ -397,6 +416,26 @@ Regeln:
 
 
 # ── Pydantic-Schema für Quiz Structured Output ────────────────────────────────
+
+_QUIZ_JSON_INSTRUCTIONS = """
+Antworte ausschliesslich mit einem validen JSON-Objekt ohne Markdown.
+Das JSON muss diese Form haben:
+{
+  "title": "Kurzer Quiztitel",
+  "questions": [
+    {
+      "type": "MC" oder "TF",
+      "question": "Fragetext",
+      "options": ["Aussage A", "Aussage B", "Aussage C", "Aussage D"] fuer MC, sonst null,
+      "correct_answer": "A" | "B" | "C" | "D" fuer MC oder "true" | "false" fuer TF,
+      "explanation": "Kurze Begruendung aus dem Material"
+    }
+  ]
+}
+Jede Frage braucht explanation. Bei Multiple Choice muss correct_answer der Buchstabe
+der richtigen Option sein, nicht der Optionstext.
+""".strip()
+
 
 class _QuizQuestionSchema(BaseModel):
     type: str = Field(description="MC oder TF")
@@ -427,7 +466,65 @@ def _is_valid_quiz_question(q: dict) -> bool:
 
 # ── Agent-Factory ─────────────────────────────────────────────────────────────
 
-def create_tutor_agent(db: AsyncSession, chat_id: str | None = None, user_id: str = "local"):
+def _extract_json_object(text: str) -> dict | None:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text or ""):
+        try:
+            value, _end = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and "questions" in value:
+            return value
+    return None
+
+
+def _normalize_quiz_question(raw: dict) -> dict:
+    q = dict(raw)
+    q["type"] = str(q.get("type", "")).upper()
+    if not str(q.get("explanation", "")).strip():
+        q["explanation"] = "Die Antwort ergibt sich aus dem bereitgestellten Lernmaterial."
+
+    if q["type"] == "MC":
+        options = q.get("options")
+        if isinstance(options, list):
+            q["options"] = [str(option) for option in options[:4]]
+            answer = str(q.get("correct_answer", "")).strip()
+            if answer.upper() in ("A", "B", "C", "D"):
+                q["correct_answer"] = answer.upper()
+            else:
+                answer_norm = answer.casefold()
+                for idx, option in enumerate(q["options"]):
+                    if str(option).strip().casefold() == answer_norm:
+                        q["correct_answer"] = "ABCD"[idx]
+                        break
+        return q
+
+    if q["type"] == "TF":
+        q["correct_answer"] = str(q.get("correct_answer", "")).strip().lower()
+        q["options"] = None
+    return q
+
+
+def _quiz_payload_from_json_text(text: str) -> dict | None:
+    payload = _extract_json_object(text)
+    if not payload:
+        return None
+    questions = []
+    for raw_question in payload.get("questions") or []:
+        if not isinstance(raw_question, dict):
+            continue
+        question = _normalize_quiz_question(raw_question)
+        if _is_valid_quiz_question(question):
+            questions.append(question)
+    if not questions:
+        return None
+    return {
+        "title": str(payload.get("title") or "Quiz").strip() or "Quiz",
+        "questions": questions,
+    }
+
+
+def create_tutor_agent(db: AsyncSession, chat_id: str | None = None, user_id: str = "local", llm=None):
     """Erstellt einen TutorAgent (LangGraph CompiledStateGraph).
 
     Dokumente werden chat-ÜBERGREIFEND durchsucht (nur nach ``user_id`` gefiltert),
@@ -517,7 +614,7 @@ def create_tutor_agent(db: AsyncSession, chat_id: str | None = None, user_id: st
             f"({res['semester']}) indiziert. Du kannst jetzt erneut suchen."
         )
 
-    llm = get_llm(temperature=0.0)
+    llm = llm or get_llm(temperature=0.0)
     return create_agent(
         model=llm,
         tools=[
@@ -547,26 +644,23 @@ async def run_tutor_agent(
         )
 
     if not _needs_material_context(message):
-        llm = get_llm(temperature=0.2)
         try:
-            response = await llm.ainvoke([
+            response = await ainvoke_with_model_fallback([
                 SystemMessage(content=_DIRECT_TUTOR_SYSTEM_PROMPT),
                 HumanMessage(content=message),
-            ])
-            text = response.content if isinstance(response.content, str) else ""
-            if isinstance(response.content, list):
-                text = "".join(
-                    part.get("text", "") if isinstance(part, dict) else str(part)
-                    for part in response.content
-                )
+            ], temperature=0.2)
+            text = _llm_response_to_text(response)
             return text.strip() or "Ich konnte leider keine Antwort generieren."
         except Exception as exc:
             logger.error("TutorAgent Direktantwort fehlgeschlagen: %s", exc)
             return "Der Tutor ist momentan nicht erreichbar. Bitte später erneut versuchen."
 
-    agent = create_tutor_agent(db, chat_id, user_id)
     try:
-        result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
+        result = await run_agent_with_model_fallback(
+            lambda llm: create_tutor_agent(db, chat_id, user_id, llm=llm),
+            {"messages": [HumanMessage(content=message)]},
+            temperature=0.0,
+        )
         return extract_text_output(result) or "Ich konnte leider keine Antwort generieren."
     except Exception as exc:
         logger.error("TutorAgent fehlgeschlagen: %s", exc)
@@ -609,9 +703,6 @@ async def generate_quiz_with_agent(
         )
 
     doc_label = course_name or ", ".join(source_documents)
-    llm = get_llm(temperature=0.3)
-    structured_llm = llm.with_structured_output(_QuizSchema)
-
     # Top-Up-Schleife: so lange (nach-)generieren, bis genug GÜLTIGE Fragen
     # vorliegen. Gleicht aus, dass das LLM oft zu wenige liefert und die
     # Validierung manche verwirft.
@@ -639,19 +730,40 @@ async def generate_quiz_with_agent(
         user_prompt += f"Lernunterlagen-Kontext:\n{context}"
 
         try:
-            result: _QuizSchema = await structured_llm.ainvoke([
-                SystemMessage(content=_QUIZ_SYSTEM_PROMPT),
-                HumanMessage(content=user_prompt),
-            ])
-        except Exception as exc:
-            logger.error("Quiz-Generierung (Runde %d) fehlgeschlagen: %s", round_idx + 1, exc)
-            if valid:
-                break  # mit dem Bisherigen weitermachen
-            raise RuntimeError("Quiz-Generierung fehlgeschlagen. Bitte später erneut versuchen.")
+            async def _invoke(llm):
+                structured_llm = llm.with_structured_output(_QuizSchema)
+                return await structured_llm.ainvoke([
+                    SystemMessage(content=_QUIZ_SYSTEM_PROMPT),
+                    HumanMessage(content=user_prompt),
+                ])
 
-        title = title or result.title
-        for q in result.questions:
-            qd = q.model_dump()
+            result: _QuizSchema = await run_with_model_fallback(_invoke, temperature=0.3)
+            quiz_payload = result.model_dump()
+        except Exception as exc:
+            quiz_payload = _quiz_payload_from_json_text(str(exc))
+            if quiz_payload is None:
+                try:
+                    async def _invoke_json(llm):
+                        return await llm.ainvoke([
+                            SystemMessage(content=f"{_QUIZ_SYSTEM_PROMPT}\n\n{_QUIZ_JSON_INSTRUCTIONS}"),
+                            HumanMessage(content=user_prompt),
+                        ])
+
+                    response = await run_with_model_fallback(_invoke_json, temperature=0.3)
+                    quiz_payload = _quiz_payload_from_json_text(_llm_response_to_text(response))
+                except Exception as json_exc:
+                    logger.error("Quiz-Generierung JSON-Fallback (Runde %d) fehlgeschlagen: %s", round_idx + 1, json_exc)
+                    quiz_payload = None
+            if quiz_payload is None:
+                logger.error("Quiz-Generierung (Runde %d) fehlgeschlagen: %s", round_idx + 1, exc)
+                if valid:
+                    break  # mit dem Bisherigen weitermachen
+                raise RuntimeError("Quiz-Generierung fehlgeschlagen. Bitte spaeter erneut versuchen.")
+            logger.warning("Quiz structured output failed; using parsed JSON fallback")
+
+        title = title or quiz_payload.get("title")
+        for q in quiz_payload.get("questions", []):
+            qd = q.model_dump() if hasattr(q, "model_dump") else dict(q)
             if not _is_valid_quiz_question(qd):
                 continue
             key = (qd.get("question") or "").strip().lower()
@@ -747,12 +859,11 @@ async def generate_quiz_review(
     else:
         user_prompt += "(Kein Lernmaterial-Kontext verfügbar — erkläre auf Basis der Fragen.)"
 
-    llm = get_llm(temperature=0.3)
     try:
-        resp = await llm.ainvoke([
+        resp = await ainvoke_with_model_fallback([
             SystemMessage(content=_REVIEW_SYSTEM_PROMPT),
             HumanMessage(content=user_prompt),
-        ])
+        ], temperature=0.3)
         text = (
             resp.content if isinstance(resp.content, str)
             else " ".join(p.get("text", "") for p in resp.content if isinstance(p, dict))

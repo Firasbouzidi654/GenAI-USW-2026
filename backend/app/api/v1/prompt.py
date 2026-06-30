@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import get_llm
+from app.agents.base import ainvoke_with_model_fallback
 from app.agents.orchestrator import run_orchestrator
 from app.core.database import get_db
 from app.models.chat import ChatMessage
@@ -53,11 +53,10 @@ async def chat_title(body: TitleRequest):
         return TitleResponse(title="Neuer Chat")
     fallback = q[:40]
     try:
-        llm = get_llm(temperature=0.0)
-        resp = await llm.ainvoke([
+        resp = await ainvoke_with_model_fallback([
             SystemMessage(content=_TITLE_SYSTEM),
             HumanMessage(content=q[:2000]),
-        ])
+        ], temperature=0.0)
         content = (
             resp.content if isinstance(resp.content, str)
             else " ".join(p.get("text", "") for p in resp.content if isinstance(p, dict))

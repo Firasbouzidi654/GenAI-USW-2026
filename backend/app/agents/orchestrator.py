@@ -21,7 +21,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm
+from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback
 from app.agents.career_agent import run_career_agent
 from app.agents.curriculum_agent import run_curriculum_agent
 from app.agents.evaluator_agent import run_evaluator_agent
@@ -170,6 +170,7 @@ def create_orchestrator(
     chat_id: str | None = None,
     user_id: str = "local",
     moodle_context: dict | None = None,
+    llm=None,
 ):
     """Erstellt den Supervisor-Agent, dessen Tools die vier Spezial-Agents sind.
 
@@ -229,7 +230,7 @@ def create_orchestrator(
         """
         return await run_curriculum_agent(request, db)
 
-    llm = get_llm(temperature=0.2)
+    llm = llm or get_llm(temperature=0.2)
     return create_agent(
         model=llm,
         tools=[ask_tutor, ask_evaluator, ask_planner, ask_career, ask_curriculum],
@@ -255,9 +256,12 @@ async def run_orchestrator(
     if _is_explicit_moodle_context_request(message):
         return await get_moodle_context_for_message(message)
 
-    orchestrator = create_orchestrator(db, chat_id, user_id, moodle_context)
     try:
-        result = await orchestrator.ainvoke({"messages": [HumanMessage(content=message)]})
+        result = await run_agent_with_model_fallback(
+            lambda llm: create_orchestrator(db, chat_id, user_id, moodle_context, llm=llm),
+            {"messages": [HumanMessage(content=message)]},
+            temperature=0.2,
+        )
         return extract_text_output(result) or "Ich konnte leider keine Antwort generieren."
     except Exception as exc:
         logger.error("Orchestrator fehlgeschlagen: %s", exc)

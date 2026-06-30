@@ -20,7 +20,7 @@ from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import extract_text_output, get_llm
+from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback
 from app.models.curriculum import CurriculumModule
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def _digits(value: str | None) -> set[str]:
     return set(re.findall(r"\d+", value or ""))
 
 
-def create_curriculum_agent(db: AsyncSession):
+def create_curriculum_agent(db: AsyncSession, llm=None):
     """Erstellt einen CurriculumAgent (LangGraph CompiledStateGraph)."""
 
     @tool
@@ -154,7 +154,7 @@ def create_curriculum_agent(db: AsyncSession):
             parts.append("Kompetenzen: " + ", ".join(m.competencies))
         return "\n".join(parts)
 
-    llm = get_llm(temperature=0.2)
+    llm = llm or get_llm(temperature=0.2)
     return create_agent(
         model=llm,
         tools=[modules_by_semester, list_all_modules, module_details],
@@ -164,9 +164,12 @@ def create_curriculum_agent(db: AsyncSession):
 
 async def run_curriculum_agent(message: str, db: AsyncSession) -> str:
     """Führt den CurriculumAgent aus und beantwortet Fragen zum Studienverlauf."""
-    agent = create_curriculum_agent(db)
     try:
-        result = await agent.ainvoke({"messages": [HumanMessage(content=message)]})
+        result = await run_agent_with_model_fallback(
+            lambda llm: create_curriculum_agent(db, llm=llm),
+            {"messages": [HumanMessage(content=message)]},
+            temperature=0.2,
+        )
         return extract_text_output(result) or "Die Anfrage konnte nicht beantwortet werden."
     except Exception as exc:
         logger.error("CurriculumAgent fehlgeschlagen: %s", exc)

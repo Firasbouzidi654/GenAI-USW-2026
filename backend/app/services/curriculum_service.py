@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.base import get_llm
+from app.agents.base import ainvoke_with_model_fallback, run_with_model_fallback
 from app.models.curriculum import CurriculumModule
 
 logger = logging.getLogger(__name__)
@@ -111,16 +111,17 @@ async def extract_and_store(text: str, db: AsyncSession) -> dict:
     if not text or not text.strip():
         return {"modules": 0, "with_prerequisites": 0}
 
-    llm = get_llm(temperature=0.0)
-    structured = llm.with_structured_output(_ModulesSchema)
-
     merged: dict[str, _ModuleSchema] = {}
     for chunk in _chunk(text):
         try:
-            result: _ModulesSchema = await structured.ainvoke([
-                SystemMessage(content=_SYSTEM_PROMPT),
-                HumanMessage(content="Modulhandbuch-Abschnitt:\n\n" + chunk),
-            ])
+            async def _invoke(llm):
+                structured = llm.with_structured_output(_ModulesSchema)
+                return await structured.ainvoke([
+                    SystemMessage(content=_SYSTEM_PROMPT),
+                    HumanMessage(content="Modulhandbuch-Abschnitt:\n\n" + chunk),
+                ])
+
+            result: _ModulesSchema = await run_with_model_fallback(_invoke, temperature=0.0)
         except Exception as exc:
             logger.warning("Curriculum-Extraktion (Abschnitt) fehlgeschlagen: %s", exc)
             continue
@@ -210,9 +211,8 @@ async def suggest_module(documents: list[str], db: AsyncSession, user_id: str = 
         "falls keines passt."
     )
 
-    llm = get_llm(temperature=0.0)
     try:
-        resp = await llm.ainvoke([HumanMessage(content=prompt)])
+        resp = await ainvoke_with_model_fallback([HumanMessage(content=prompt)], temperature=0.0)
         answer = (resp.content if isinstance(resp.content, str)
                   else " ".join(p.get("text", "") for p in resp.content if isinstance(p, dict))).strip()
     except Exception as exc:

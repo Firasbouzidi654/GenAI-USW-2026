@@ -208,7 +208,17 @@ def _overview_item(module: dict, content: dict | None = None) -> dict:
 
 
 def _extract_pdf_text(data: bytes) -> str:
-    return _extract_file_text(filename or fileurl, data)
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        logger.warning("pypdf ist nicht installiert; PDF kann nicht gelesen werden.")
+        return ""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+    except Exception as exc:
+        logger.warning("PDF aus Moodle nicht lesbar: %s", exc)
+        return ""
 
 
 def _shape_text_lines(shape) -> list[str]:

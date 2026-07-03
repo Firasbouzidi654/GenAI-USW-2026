@@ -205,14 +205,20 @@ async def get_quiz(quiz_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/quiz/{quiz_id}/submit", response_model=AttemptResultOut, status_code=201)
 async def submit_attempt(quiz_id: int, body: SubmitAttemptRequest, db: AsyncSession = Depends(get_db)):
+    question_ids = [a.question_id for a in body.answers]
+    if len(set(question_ids)) != len(question_ids):
+        raise HTTPException(status_code=422, detail="Jede Frage darf nur einmal beantwortet werden.")
+
     try:
         quiz_result = await db.execute(select(Quiz).where(Quiz.id == quiz_id))
         if quiz_result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Quiz nicht gefunden.")
 
-        question_ids = [a.question_id for a in body.answers]
         q_result = await db.execute(
-            select(QuizQuestion).where(QuizQuestion.id.in_(question_ids))
+            select(QuizQuestion).where(
+                QuizQuestion.id.in_(question_ids),
+                QuizQuestion.quiz_id == quiz_id,
+            )
         )
         questions_by_id = {q.id: q for q in q_result.scalars().all()}
     except HTTPException:
@@ -256,6 +262,7 @@ async def submit_attempt(quiz_id: int, body: SubmitAttemptRequest, db: AsyncSess
             ))
         await db.commit()
     except Exception:
+        await db.rollback()
         raise HTTPException(status_code=503, detail="Ergebnis konnte nicht gespeichert werden.")
 
     return AttemptResultOut(

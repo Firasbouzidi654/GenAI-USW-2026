@@ -1192,6 +1192,67 @@ const UiIcon = {
 
 marked.use({ breaks: true })
 
+const ALLOWED_MARKDOWN_TAGS = new Set([
+  'A',
+  'BLOCKQUOTE',
+  'BR',
+  'CODE',
+  'EM',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'HR',
+  'LI',
+  'OL',
+  'P',
+  'PRE',
+  'STRONG',
+  'TABLE',
+  'TBODY',
+  'TD',
+  'TH',
+  'THEAD',
+  'TR',
+  'UL',
+])
+const ALLOWED_MARKDOWN_ATTRS = {
+  A: new Set(['href', 'title', 'target', 'rel']),
+}
+
+function sanitizeMarkdownHtml(html) {
+  const template = document.createElement('template')
+  template.innerHTML = html
+  const nodes = [...template.content.querySelectorAll('*')]
+
+  for (const node of nodes) {
+    if (!ALLOWED_MARKDOWN_TAGS.has(node.tagName)) {
+      node.replaceWith(...node.childNodes)
+      continue
+    }
+
+    const allowedAttrs = ALLOWED_MARKDOWN_ATTRS[node.tagName] || new Set()
+    for (const attr of [...node.attributes]) {
+      if (!allowedAttrs.has(attr.name.toLowerCase())) {
+        node.removeAttribute(attr.name)
+      }
+    }
+
+    if (node.tagName === 'A') {
+      const href = node.getAttribute('href') || ''
+      if (!/^(https?:|mailto:|#|\/)/i.test(href)) {
+        node.removeAttribute('href')
+      }
+      node.setAttribute('target', '_blank')
+      node.setAttribute('rel', 'noopener noreferrer')
+    }
+  }
+
+  return template.innerHTML
+}
+
 const semesterCourseKeywords = {
   1: [
     'Grundlagen der Programmierung',
@@ -2043,7 +2104,7 @@ export default {
     },
     renderMarkdown(text) {
       if (!text) return ''
-      return marked.parse(text)
+      return sanitizeMarkdownHtml(marked.parse(text))
     },
     resizeTextarea() {
       const el = this.$refs.textarea

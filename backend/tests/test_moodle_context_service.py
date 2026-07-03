@@ -97,7 +97,13 @@ async def test_moodle_context_returns_courses(unternehmenssoftware_moodle):
 
 
 @pytest.mark.asyncio
-async def test_moodle_context_returns_next_deadline(unternehmenssoftware_moodle):
+async def test_moodle_context_returns_next_deadline(unternehmenssoftware_moodle, monkeypatch):
+    monkeypatch.setattr(
+        moodle_context,
+        "_now_utc",
+        lambda: datetime(2026, 6, 29, 0, 0, tzinfo=timezone.utc),
+    )
+
     result = await moodle_context.get_next_moodle_deadline_context("Unternehmenssoftware")
 
     assert "Submission Presentation 3" in result

@@ -299,3 +299,7 @@ def test_pptx_extraction_preserves_every_slide_title_and_content():
     assert "Slide 2: Async Await" in text
     assert "Lesbarer Kontrollfluss" in text
     assert "Fehlerbehandlung" in text
+
+
+def test_pdf_extraction_handles_invalid_pdf_without_name_error():
+    assert moodle_service._extract_pdf_text(b"not a pdf") == ""

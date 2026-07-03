@@ -8,7 +8,7 @@ und werden vom LSF-Sync verwaltet.
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,11 +35,11 @@ class CalendarEventOut(BaseModel):
 
 
 class UserEventIn(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=512)
     start_time: datetime
     end_time: datetime
-    location: str | None = None
-    description: str | None = None
+    location: str | None = Field(default=None, max_length=512)
+    description: str | None = Field(default=None, max_length=5000)
 
 
 class MoodleDeadlineSyncOut(BaseModel):
@@ -66,12 +66,15 @@ async def get_calendar_events(db: AsyncSession = Depends(get_db)):
 @router.post("/calendar/events", response_model=CalendarEventOut, status_code=201)
 async def create_user_event(body: UserEventIn, db: AsyncSession = Depends(get_db)):
     """Legt einen eigenen Termin an (wird im Kalender markiert + bei der Planung berücksichtigt)."""
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Titel darf nicht leer sein.")
     if body.end_time <= body.start_time:
         raise HTTPException(status_code=422, detail="Ende muss nach dem Start liegen.")
     try:
         event = CalendarEvent(
             uid=f"user:{datetime.now().timestamp()}",
-            title=body.title.strip() or "Termin",
+            title=title,
             start_time=body.start_time,
             end_time=body.end_time,
             location=(body.location or "").strip() or None,

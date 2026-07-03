@@ -1,4 +1,5 @@
 import shutil
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
@@ -16,6 +17,17 @@ UPLOAD_DIR = Path("uploads")
 router = APIRouter()
 
 
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_scope_id(value: str | None, field_name: str) -> str | None:
+    if value in (None, ""):
+        return None
+    if not _SAFE_ID_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail=f"Ungültige {field_name}.")
+    return value
+
+
 @router.post("/upload")
 async def upload_pdf(
     file: UploadFile,
@@ -28,8 +40,10 @@ async def upload_pdf(
         raise HTTPException(status_code=400, detail="Nur PDF-Dateien erlaubt.")
 
     filename = Path(file.filename).name
-    if not filename:
+    if not filename or not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Ungültiger Dateiname.")
+    chat_id = _validate_scope_id(chat_id, "chat_id")
+    user_id = _validate_scope_id(user_id, "user_id") or DEFAULT_USER_ID
 
     UPLOAD_DIR.mkdir(exist_ok=True)
     # Pro Chat einen Unterordner, damit gleichnamige Dateien sich nicht überschreiben.

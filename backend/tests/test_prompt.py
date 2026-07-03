@@ -20,6 +20,19 @@ def test_prompt_missing_field_returns_422(client):
     assert response.status_code == 422
 
 
+def test_prompt_blank_prompt_returns_422(client):
+    response = client.post("/api/prompt", json={"prompt": "   "})
+    assert response.status_code == 422
+
+
+def test_prompt_unsafe_chat_id_returns_422(client):
+    response = client.post(
+        "/api/prompt",
+        json={"prompt": "Was ist SQL?", "chat_id": "../outside"},
+    )
+    assert response.status_code == 422
+
+
 def test_prompt_agent_error_yields_error_event(client):
     with patch(_MOCK_TARGET, new=AsyncMock(side_effect=Exception("Agent down"))):
         response = client.post("/api/prompt", json={"prompt": "Was ist SQL?"})

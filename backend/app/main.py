@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api.v1 import calendar, career, email_agent, evaluator, exams, grades, history, job_agent, lsf_mock, moodle, planner, profile, prompt, study_advisor, tutor, upload
+from app.api.v1 import calendar, career, curriculum, email_agent, evaluator, exams, grades, history, job_agent, lsf_mock, moodle, planner, profile, prompt, study_advisor, tutor, upload
 from app.core.database import Base, engine
 import app.models
 
@@ -40,6 +40,7 @@ app.add_middleware(
 app.include_router(lsf_mock.router, prefix="/api")
 app.include_router(moodle.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
+app.include_router(curriculum.router, prefix="/api")
 app.include_router(prompt.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 app.include_router(history.router, prefix="/api")

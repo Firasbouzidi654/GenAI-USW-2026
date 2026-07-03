@@ -6,12 +6,13 @@ Bedarf verkettet.
 """
 
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import ainvoke_with_model_fallback
@@ -21,16 +22,43 @@ from app.models.chat import ChatMessage
 
 router = APIRouter()
 
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
 
 class PromptRequest(BaseModel):
-    prompt: str
-    chat_id: str | None = None
-    user_id: str = "local"
+    prompt: str = Field(..., min_length=1, max_length=10000)
+    chat_id: str | None = Field(default=None, max_length=64)
+    user_id: str = Field(default="local", min_length=1, max_length=64)
     moodle_context: dict[str, Any] | None = None
+
+    @field_validator("prompt")
+    @classmethod
+    def prompt_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Prompt darf nicht leer sein.")
+        return value
+
+    @field_validator("chat_id", "user_id")
+    @classmethod
+    def ids_must_be_safe(cls, value: str | None) -> str | None:
+        if value in (None, ""):
+            return value
+        if not _SAFE_ID_RE.fullmatch(value):
+            raise ValueError("ID enthält ungültige Zeichen.")
+        return value
 
 
 class TitleRequest(BaseModel):
-    question: str
+    question: str = Field(..., min_length=1, max_length=2000)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Frage darf nicht leer sein.")
+        return value
 
 
 class TitleResponse(BaseModel):

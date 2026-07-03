@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.planner_agent import run_planner_agent
@@ -11,7 +11,15 @@ router = APIRouter()
 
 
 class StudyAdvisorRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=10000)
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Nachricht darf nicht leer sein.")
+        return value
 
 
 class StudyAdvisorResponse(BaseModel):

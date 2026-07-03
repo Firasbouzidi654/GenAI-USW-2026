@@ -8,7 +8,7 @@ Termine und Deadlines).
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -21,7 +21,7 @@ router = APIRouter()
 
 
 class StudyPlanRequest(BaseModel):
-    horizon_days: int = 7
+    horizon_days: int = Field(7, ge=1, le=21)
 
 
 class StudyPlanResponse(BaseModel):
@@ -41,8 +41,7 @@ _STUDY_PLAN_PROMPT = (
 @router.post("/planner/study-plan", response_model=StudyPlanResponse)
 async def create_study_plan(body: StudyPlanRequest, db: AsyncSession = Depends(get_db)):
     """Generiert einen zeitlich geblockten Lernplan über den PlannerAgent."""
-    days = max(1, min(body.horizon_days, 21))
-    plan = await run_planner_agent(_STUDY_PLAN_PROMPT.format(days=days), db)
+    plan = await run_planner_agent(_STUDY_PLAN_PROMPT.format(days=body.horizon_days), db)
     return {"plan": plan}
 
 

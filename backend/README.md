@@ -185,6 +185,12 @@ Beim ersten Start legt `create_all` alle Tabellen automatisch an und der
 | `DELETE` | `/api/tutor/stats` | **Statistiken zurücksetzen** (Versuche + Antworten löschen) |
 | `GET` | `/api/tutor/profile` | **Lernprofil**: pro Thema ein Score 0–100 aus den Quiz-Ergebnissen |
 
+### Profil
+
+| Methode | URL | Beschreibung |
+|---|---|---|
+| `POST` | `/api/profile/reset` | **Alle Nutzerdaten zurücksetzen**: Quizze, Versuche, Dokumente (inkl. Vektor-DB), Lebenslauf, Modulhandbuch und eigene Kalendertermine |
+
 ### Career & CV
 
 | Methode | URL | Beschreibung |

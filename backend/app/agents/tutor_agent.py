@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from typing import Any
 
 from langgraph.prebuilt import create_react_agent as create_agent
@@ -143,6 +144,26 @@ def _normalize_course_id(course_id):
     return course_id
 
 
+def _normalize_match_text(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"\b0+(\d+)\b", r"\1", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _label_matches_message(label: str | None, normalized_message: str) -> bool:
+    normalized_label = _normalize_match_text(label)
+    if not normalized_label or not normalized_message:
+        return False
+    if normalized_label in normalized_message:
+        return True
+    label_tokens = set(normalized_label.split())
+    message_tokens = set(normalized_message.split())
+    meaningful = {token for token in label_tokens if len(token) > 2 or token.isdigit()}
+    return bool(meaningful) and meaningful.issubset(message_tokens)
+
+
 def _iter_moodle_context_sections(moodle_context: dict | None):
     if not isinstance(moodle_context, dict):
         return
@@ -155,20 +176,21 @@ def _is_selected_moodle_material_request(message: str, moodle_context: dict | No
     if not isinstance(moodle_context, dict) or not moodle_context.get("course_id"):
         return False
     text = (message or "").lower()
+    normalized_text = _normalize_match_text(message)
     if not text:
         return False
     if any(keyword in text for keyword in _SELECTED_MOODLE_MATERIAL_KEYWORDS):
         return True
     for section in _iter_moodle_context_sections(moodle_context):
-        section_name = str(section.get("section_name") or "").lower()
-        if section_name and section_name in text:
+        section_name = str(section.get("section_name") or "")
+        if _label_matches_message(section_name, normalized_text):
             return True
         for item in section.get("items") or []:
             if not isinstance(item, dict):
                 continue
             for key in ("name", "filename"):
-                label = str(item.get(key) or "").lower()
-                if label and label in text:
+                label = str(item.get(key) or "")
+                if _label_matches_message(label, normalized_text):
                     return True
     return False
 
@@ -185,11 +207,11 @@ def _is_supported_moodle_file(filename: str) -> bool:
 
 
 def _matching_moodle_files(message: str, moodle_context: dict | None) -> list[dict]:
-    text = (message or "").lower()
+    normalized_text = _normalize_match_text(message)
     matched: list[dict] = []
     for section in _iter_moodle_context_sections(moodle_context):
         section_name = str(section.get("section_name") or "")
-        section_matches = bool(section_name and section_name.lower() in text)
+        section_matches = _label_matches_message(section_name, normalized_text)
         for item in section.get("items") or []:
             if not isinstance(item, dict):
                 continue
@@ -198,7 +220,7 @@ def _matching_moodle_files(message: str, moodle_context: dict | None) -> list[di
                 continue
             name = str(item.get("name") or "").strip()
             item_matches = any(
-                label and label.lower() in text
+                _label_matches_message(label, normalized_text)
                 for label in (filename, name)
             )
             if section_matches or item_matches:
@@ -229,7 +251,7 @@ async def _load_matching_moodle_files_from_service(
         logger.warning("Moodle-Dateiliste konnte nicht geladen werden: %s", exc)
         return []
 
-    text = (message or "").lower()
+    normalized_text = _normalize_match_text(message)
     matched: list[dict] = []
     for file_info in files:
         filename = str(file_info.get("filename") or "")
@@ -238,9 +260,9 @@ async def _load_matching_moodle_files_from_service(
         if not filename or not _is_supported_moodle_file(filename):
             continue
         if (
-            filename.lower() in text
-            or (section and section.lower() in text)
-            or (module and module.lower() in text)
+            _label_matches_message(filename, normalized_text)
+            or _label_matches_message(section, normalized_text)
+            or _label_matches_message(module, normalized_text)
         ):
             matched.append(file_info)
     by_filename: dict[str, dict] = {}

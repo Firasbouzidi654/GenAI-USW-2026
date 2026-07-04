@@ -153,6 +153,45 @@ async def test_selected_moodle_material_indexes_on_demand_when_missing(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_selected_moodle_material_matches_session_numbers_fuzzily(monkeypatch):
+    fake_llm = _FakeDirectLlm("Session 01 aus Moodle-Kontext.")
+    retrieve_context = AsyncMock(return_value="[Quelle 1 - usw_session_01.pptx]\nKontext")
+
+    async def fake_invoke(messages, temperature=0.0):
+        return await fake_llm.ainvoke(messages)
+
+    monkeypatch.setattr(tutor_agent, "ainvoke_with_model_fallback", fake_invoke)
+    monkeypatch.setattr(tutor_agent, "retrieve_context", retrieve_context)
+
+    result = await tutor_agent.run_tutor_agent(
+        "Erkläre mir die Slides aus Session 1",
+        MagicMock(),
+        user_id="local",
+        moodle_context={
+            "course_id": 58776,
+            "course_name": "B5.3 Unternehmenssoftware",
+            "sections": [
+                {
+                    "section_name": "Session 01",
+                    "items": [
+                        {
+                            "name": "USW 2026 WS Session 01",
+                            "filename": "usw_session_01.pptx",
+                            "fileurl": "https://moodle.test/usw_session_01.pptx",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert "Session 01" in result
+    kwargs = retrieve_context.call_args.kwargs
+    assert kwargs["source_filter"] == ["usw_session_01.pptx"]
+    assert kwargs["metadata_filter"] == {"moodle": "1", "course_id": 58776}
+
+
+@pytest.mark.asyncio
 async def test_moodle_pptx_download_index_and_explain_integration(monkeypatch):
     from app.rag import pipeline, retriever
     from app.services import moodle_service

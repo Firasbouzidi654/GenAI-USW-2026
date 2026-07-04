@@ -1,14 +1,15 @@
-def _route_paths(app):
-    return {getattr(route, "path", "") for route in app.routes}
-
-
 def test_frontend_curriculum_routes_are_registered(client):
-    paths = _route_paths(client.app)
+    status = client.get("/api/curriculum/status")
+    suggestion = client.post("/api/curriculum/suggest-module", json={"documents": []})
+    upload_validation = client.post(
+        "/api/curriculum/upload",
+        files={"file": ("modules.txt", b"not a pdf", "text/plain")},
+    )
 
-    assert "/api/curriculum" in paths
-    assert "/api/curriculum/status" in paths
-    assert "/api/curriculum/upload" in paths
-    assert "/api/curriculum/suggest-module" in paths
+    assert status.status_code == 200
+    assert suggestion.status_code == 200
+    assert suggestion.json() == {"module": None}
+    assert upload_validation.status_code == 400
 
 
 def test_curriculum_status_contract(client):

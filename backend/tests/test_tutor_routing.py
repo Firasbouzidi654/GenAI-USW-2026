@@ -94,6 +94,7 @@ async def test_selected_moodle_session_uses_filtered_rag_path(monkeypatch):
     )
 
     assert "Session 1" in result
+    assert "Quelle: Moodle RAG (ChromaDB + Gemini)" in result
     create_agent.assert_not_called()
     retrieve_context.assert_awaited_once()
     kwargs = retrieve_context.call_args.kwargs
@@ -142,6 +143,7 @@ async def test_selected_moodle_material_indexes_on_demand_when_missing(monkeypat
     )
 
     assert "PPTX aus Moodle" in result
+    assert "Quelle: Moodle RAG (ChromaDB + Gemini)" in result
     assert retrieve_context.await_count == 2
     download_file_text.assert_awaited_once_with("https://moodle.test/slides.pptx", "slides.pptx")
     index_text.assert_called_once()
@@ -301,6 +303,7 @@ async def test_moodle_pptx_download_index_and_explain_integration(monkeypatch):
     )
 
     assert "Promises und Async/Await" in result
+    assert "Quelle: Moodle RAG (ChromaDB + Gemini)" in result
     assert any(meta.get("source") == "sample.pptx" for meta in collection.metadatas)
     assert any(meta.get("slide_number") == 1 for meta in collection.metadatas)
     assert any(meta.get("slide_number") == 2 for meta in collection.metadatas)

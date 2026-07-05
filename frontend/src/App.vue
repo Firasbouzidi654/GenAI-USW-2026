@@ -85,7 +85,18 @@
                 Synchronisiere zuerst deine Noten (oder lade einen Lebenslauf hoch), um eine persönliche Karriereanalyse zu erhalten.
               </div>
               <template v-else>
-                <span class="career-source-badge"><UiIcon name="sparkle" fallback="✨" /> KI-Analyse</span>
+                <div class="career-source-row">
+                  <span class="career-source-badge"><UiIcon name="sparkle" fallback="✨" /> KI-Analyse</span>
+                  <button
+                    v-if="careerJobSourceBadge"
+                    type="button"
+                    :class="['career-source-badge', 'career-job-source-badge', careerJobSourceBadge.kind]"
+                    :title="careerJobSourceBadge.title"
+                    :aria-label="careerJobSourceBadge.title"
+                  >
+                    {{ careerJobSourceBadge.label }}
+                  </button>
+                </div>
 
                 <!-- DATENBASIS: was fließt in die Analyse ein -->
                 <div v-if="careerAnalysis.data_sources" class="career-datasources">
@@ -932,7 +943,7 @@
                     v-if="item.filename"
                     type="button"
                     class="moodle-open-btn"
-                    @click="askMoodleMaterial(item)"
+                    @click="askMoodleMaterial(item, section)"
                   >Ask AI</button>
                   <a
                     v-if="moodleItemUrl(item)"
@@ -1378,6 +1389,7 @@ export default {
       moodleSemesterFilter: 'current',
       moodleCourseSearch: '',
       selectedMoodleCourse: null,
+      selectedMoodleMaterial: null,
       moodleActiveTab: 'materials',
       moodleLoading: false,
       moodleError: '',
@@ -1605,6 +1617,9 @@ export default {
     },
     chatInputPlaceholder() {
       if (this.isListening) return 'Höre zu…'
+      if (this.selectedMoodleMaterial) {
+        return `Frage zu ${this.selectedMoodleMaterial.filename || this.selectedMoodleMaterial.name}...`
+      }
       if (this.mainView === 'moodle' && this.selectedMoodleCourse) {
         return 'Frage zum ausgewählten Moodle-Kurs…'
       }
@@ -1612,6 +1627,23 @@ export default {
     },
     bestCareerMatch() {
       return this.careerAnalysis?.roles?.length ? this.careerAnalysis.roles[0] : null
+    },
+    careerJobSourceBadge() {
+      const source = String(this.careerAnalysis?.job_source || '').trim()
+      if (!source) return null
+      const hasLiveJobs = Array.isArray(this.careerAnalysis?.jobs) && this.careerAnalysis.jobs.length > 0
+      if (!hasLiveJobs) {
+        return {
+          kind: 'fallback',
+          label: 'Fallback links',
+          title: 'No live job results were returned; use the prefiltered portal links.',
+        }
+      }
+      return {
+        kind: 'live',
+        label: `Live data: ${source}`,
+        title: `Job data is using the live source ${source}.`,
+      }
     },
     currentQuestion() {
       if (!this.tutorQuiz) return null
@@ -1816,6 +1848,7 @@ export default {
     },
     async selectMoodleCourse(course) {
       this.selectedMoodleCourse = course
+      this.selectedMoodleMaterial = null
       this.moodleActiveTab = 'materials'
       await Promise.all([
         this.loadMoodleOverview(course.id),
@@ -2304,23 +2337,44 @@ export default {
     },
     buildMoodleChatContext() {
       if (!this.selectedMoodleCourse) return null
+      const selected = this.selectedMoodleMaterial
+      const sections = selected
+        ? [{
+            section_name: selected.section_name || '',
+            items: [{
+              name: selected.name || '',
+              filename: selected.filename || '',
+              type: selected.type || '',
+              modname: selected.modname || '',
+              fileurl: selected.fileurl || '',
+              open_url: selected.open_url || '',
+              url: selected.url || '',
+            }],
+          }]
+        : (this.moodleOverview || []).map(section => ({
+            section_name: section.section_name || '',
+            items: (section.items || []).map(item => ({
+              name: item.name || '',
+              filename: item.filename || '',
+              type: item.type || '',
+              modname: item.modname || '',
+              fileurl: item.fileurl || '',
+              open_url: item.open_url || '',
+              url: item.url || '',
+            })),
+          }))
       return {
         course_id: this.selectedMoodleCourse.id,
         course_name: this.selectedMoodleCourse.fullname,
         course_shortname: this.selectedMoodleCourse.shortname,
         active_tab: this.moodleActiveTab,
-        sections: (this.moodleOverview || []).map(section => ({
-          section_name: section.section_name || '',
-          items: (section.items || []).map(item => ({
-            name: item.name || '',
-            filename: item.filename || '',
-            type: item.type || '',
-            modname: item.modname || '',
-            fileurl: item.fileurl || '',
-            open_url: item.open_url || '',
-            url: item.url || '',
-          })),
-        })),
+        ...(selected ? {
+          selected_section: selected.section_name || '',
+          selected_material: selected.filename || selected.name || '',
+          selected_material_name: selected.name || '',
+          selected_material_filename: selected.filename || '',
+        } : {}),
+        sections,
       }
     },
     isMoodlePromptQuestion(text, moodleContext = null) {
@@ -2328,6 +2382,7 @@ export default {
       if (lower.includes('moodle')) return true
       if (this.isDeterministicMoodleCourseQuestion(text)) return true
       if (!moodleContext) return false
+      if (moodleContext.selected_material) return true
       const materialKeywords = [
         'session', 'slides', 'slide', 'folie', 'folien', 'ppt', 'pptx',
         'pdf', 'material', 'materialien',
@@ -2343,13 +2398,25 @@ export default {
         this.sendPrompt()
       })
     },
-    askMoodleMaterial(item) {
+    askMoodleMaterial(item, section = null) {
       const label = item?.filename || item?.name
       if (!label) return
-      this.prompt = `Erkläre ${label}`
+      this.selectedMoodleMaterial = {
+        name: item.name || '',
+        filename: item.filename || '',
+        type: item.type || '',
+        modname: item.modname || '',
+        fileurl: item.fileurl || '',
+        open_url: item.open_url || '',
+        url: item.url || '',
+        section_name: section?.section_name || '',
+      }
+      this.mainView = 'chat'
+      this.activePanel = null
+      this.prompt = ''
       this.$nextTick(() => {
         this.resizeTextarea()
-        this.sendPrompt()
+        this.$refs.textarea?.focus()
       })
     },
 
@@ -4541,6 +4608,13 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
 
 .career-empty { font-size: 13px; color: var(--text-muted); text-align: center; padding: 16px 4px; line-height: 1.5; }
 
+.career-source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .career-source-badge {
   align-self: flex-start;
   font-size: 11px;
@@ -4550,6 +4624,16 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   background: var(--primary-dim);
   color: var(--primary);
 }
+
+.career-job-source-badge {
+  border: 1px solid var(--border);
+  cursor: default;
+  font-family: inherit;
+}
+.career-job-source-badge.live { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+.career-job-source-badge.fallback { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+.dark .career-job-source-badge.live { background: #14231a; color: #4ade80; border-color: #1f3a29; }
+.dark .career-job-source-badge.fallback { background: #2a2410; color: #fbbf24; border-color: #4a3710; }
 
 .career-summary-text {
   margin: 0;

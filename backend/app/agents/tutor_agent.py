@@ -28,6 +28,7 @@ from app.agents.base import (
     run_agent_with_model_fallback,
     run_with_model_fallback,
 )
+from app.agents.response_sources import MOODLE_RAG_SOURCE, append_source
 from app.models.document import Document
 from app.rag.retriever import has_indexed_source, retrieve_context
 
@@ -661,9 +662,10 @@ async def run_tutor_agent(
 ) -> str:
     """Führt den TutorAgent für eine Konversationsrunde aus."""
     if _is_selected_moodle_material_request(message, moodle_context):
-        return await _answer_from_selected_moodle_material(
+        answer = await _answer_from_selected_moodle_material(
             message, chat_id, user_id, moodle_context or {}
         )
+        return append_source(answer, MOODLE_RAG_SOURCE)
 
     if not _needs_material_context(message):
         try:

@@ -26,6 +26,7 @@ from app.agents.career_agent import run_career_agent
 from app.agents.curriculum_agent import run_curriculum_agent
 from app.agents.evaluator_agent import run_evaluator_agent
 from app.agents.planner_agent import run_planner_agent
+from app.agents.response_sources import MOODLE_API_SOURCE, append_source
 from app.agents.tutor_agent import run_tutor_agent
 from app.services.moodle_context_service import get_moodle_context_for_message
 
@@ -165,6 +166,31 @@ def _is_selected_moodle_material_request(message: str, moodle_context: dict | No
     return any(label.lower() and label.lower() in text for label in _iter_moodle_context_labels(moodle_context))
 
 
+def _selected_moodle_material_label(moodle_context: dict | None) -> str:
+    if not isinstance(moodle_context, dict):
+        return ""
+    for key in ("selected_material_filename", "selected_material", "selected_material_name"):
+        value = str(moodle_context.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _has_active_selected_moodle_material(moodle_context: dict | None) -> bool:
+    return bool(
+        isinstance(moodle_context, dict)
+        and moodle_context.get("course_id")
+        and _selected_moodle_material_label(moodle_context)
+    )
+
+
+def _with_selected_moodle_material_hint(message: str, moodle_context: dict | None) -> str:
+    label = _selected_moodle_material_label(moodle_context)
+    if not label or label.lower() in (message or "").lower():
+        return message
+    return f"{message}\n\nAusgewaehltes Moodle-Material: {label}"
+
+
 def create_orchestrator(
     db: AsyncSession,
     chat_id: str | None = None,
@@ -251,10 +277,25 @@ async def run_orchestrator(
     sie bei Bedarf und liefert eine integrierte Antwort.
     """
     if _is_selected_moodle_material_request(message, moodle_context):
-        return await run_tutor_agent(message, db, chat_id, user_id, moodle_context=moodle_context)
+        return await run_tutor_agent(
+            _with_selected_moodle_material_hint(message, moodle_context),
+            db,
+            chat_id,
+            user_id,
+            moodle_context=moodle_context,
+        )
 
     if _is_explicit_moodle_context_request(message):
-        return await get_moodle_context_for_message(message)
+        return append_source(await get_moodle_context_for_message(message), MOODLE_API_SOURCE)
+
+    if _has_active_selected_moodle_material(moodle_context):
+        return await run_tutor_agent(
+            _with_selected_moodle_material_hint(message, moodle_context),
+            db,
+            chat_id,
+            user_id,
+            moodle_context=moodle_context,
+        )
 
     try:
         result = await run_agent_with_model_fallback(

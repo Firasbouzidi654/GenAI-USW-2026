@@ -140,7 +140,8 @@ async def test_orchestrator_uses_moodle_context_for_explicit_moodle_question(mon
 
     result = await orchestrator.run_orchestrator("Was ist meine nächste Moodle-Aufgabe?", MagicMock())
 
-    assert result == "Naechste Moodle-Aufgabe"
+    assert result.startswith("Naechste Moodle-Aufgabe")
+    assert "Quelle: Moodle API (Live-Daten)" in result
     context.assert_awaited_once()
     create_orchestrator.assert_not_called()
 
@@ -157,7 +158,8 @@ async def test_orchestrator_uses_moodle_context_for_explicit_moodle_deadlines(mo
         MagicMock(),
     )
 
-    assert result == "Moodle-Deadlines fuer Unternehmenssoftware"
+    assert result.startswith("Moodle-Deadlines fuer Unternehmenssoftware")
+    assert "Quelle: Moodle API (Live-Daten)" in result
     context.assert_awaited_once()
     create_orchestrator.assert_not_called()
 
@@ -174,7 +176,8 @@ async def test_orchestrator_uses_moodle_context_for_semester_course_question(mon
         MagicMock(),
     )
 
-    assert result == "Moodle-Kurse fuer Semester 5"
+    assert result.startswith("Moodle-Kurse fuer Semester 5")
+    assert "Quelle: Moodle API (Live-Daten)" in result
     context.assert_awaited_once()
     create_orchestrator.assert_not_called()
 
@@ -196,7 +199,8 @@ async def test_orchestrator_uses_moodle_context_for_course_semester_variants(mes
 
     result = await orchestrator.run_orchestrator(message, MagicMock())
 
-    assert result == "Moodle-Kurse fuer Semester 5"
+    assert result.startswith("Moodle-Kurse fuer Semester 5")
+    assert "Quelle: Moodle API (Live-Daten)" in result
     context.assert_awaited_once()
     create_orchestrator.assert_not_called()
 
@@ -213,7 +217,8 @@ async def test_orchestrator_uses_moodle_context_for_next_moodle_deadline(monkeyp
         MagicMock(),
     )
 
-    assert result == "Naechste Moodle-Deadline"
+    assert result.startswith("Naechste Moodle-Deadline")
+    assert "Quelle: Moodle API (Live-Daten)" in result
     context.assert_awaited_once()
     create_orchestrator.assert_not_called()
 
@@ -275,6 +280,43 @@ async def test_orchestrator_routes_selected_moodle_session_to_tutor(monkeypatch)
 
     assert result == "Session 1 aus Moodle-RAG"
     tutor.assert_awaited_once()
+    assert tutor.call_args.kwargs["moodle_context"] == moodle_context
+    context.assert_not_called()
+    create_orchestrator.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_routes_active_selected_moodle_material_to_tutor(monkeypatch):
+    tutor = AsyncMock(return_value="Selected Moodle file answer")
+    context = AsyncMock(return_value="moodle context")
+    create_orchestrator = MagicMock()
+    monkeypatch.setattr(orchestrator, "run_tutor_agent", tutor)
+    monkeypatch.setattr(orchestrator, "get_moodle_context_for_message", context)
+    monkeypatch.setattr(orchestrator, "create_orchestrator", create_orchestrator)
+
+    moodle_context = {
+        "course_id": 58776,
+        "course_name": "B5.3 Unternehmenssoftware",
+        "selected_material": "session1.pdf",
+        "selected_material_filename": "session1.pdf",
+        "sections": [
+            {
+                "section_name": "Session 1",
+                "items": [{"name": "Session 1 Slides", "filename": "session1.pdf"}],
+            }
+        ],
+    }
+    result = await orchestrator.run_orchestrator(
+        "What is the main idea?",
+        MagicMock(),
+        chat_id="chat-1",
+        user_id="local",
+        moodle_context=moodle_context,
+    )
+
+    assert result == "Selected Moodle file answer"
+    tutor.assert_awaited_once()
+    assert "session1.pdf" in tutor.call_args.args[0]
     assert tutor.call_args.kwargs["moodle_context"] == moodle_context
     context.assert_not_called()
     create_orchestrator.assert_not_called()

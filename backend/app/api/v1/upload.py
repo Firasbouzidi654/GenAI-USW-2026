@@ -115,14 +115,21 @@ async def list_documents(
             where={"user_id": {"$eq": user_id}},
             include=["metadatas"],
         )
+        # Moodle-indizierte Kursmaterialien (moodle="1") NICHT als „hochgeladene Dokumente"
+        # anzeigen — der Nutzer hat sie nicht selbst hochgeladen, sie kommen aus Moodle.
+        moodle_sources: set[str] = set()
         seen: set[str] = set()
         names: list[str] = []
         for meta in result.get("metadatas") or []:
             source = meta.get("source", "")
-            if source and source not in seen:
+            if not source:
+                continue
+            if str(meta.get("moodle", "")) == "1":
+                moodle_sources.add(source)
+            elif source not in seen:
                 seen.add(source)
                 names.append(source)
-        return sorted(names)
+        return sorted(n for n in names if n not in moodle_sources)
     except Exception:
         return []
 

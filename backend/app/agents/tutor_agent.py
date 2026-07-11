@@ -712,10 +712,11 @@ async def generate_quiz_with_agent(
     """
     broad_query = "Hauptthemen, wichtige Konzepte, Definitionen, Kernaussagen und Beispiele"
     # chat_id=None: Quiz greift chat-übergreifend auf die gewählten Dokumente zu.
+    # Mehr Chunks bei größeren Quizzen, damit der gesamte PDF-Inhalt abgedeckt wird.
     context = await retrieve_context(
         broad_query,
         source_filter=source_documents,
-        n_results=20,
+        n_results=40 if num_questions >= 8 else 20,
         threshold=None,
         chat_id=None,
         user_id=user_id,
@@ -733,7 +734,9 @@ async def generate_quiz_with_agent(
     valid: list[dict] = []
     seen: set[str] = set()
     title: str | None = None
-    max_rounds = 3
+    # Kleine Quizze: 2 Runden (spart LLM-Calls). Große/„vollständige" Quizze (≥8 Fragen):
+    # bis zu 3 Runden, damit die gewünschte Anzahl auch wirklich erreicht wird.
+    max_rounds = 3 if num_questions >= 8 else 2
 
     for round_idx in range(max_rounds):
         need = num_questions - len(valid)

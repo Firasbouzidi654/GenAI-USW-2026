@@ -20,3 +20,4 @@ pytest
 pytest-asyncio
 httpx
 tzdata
+fastembed>=0.8.0

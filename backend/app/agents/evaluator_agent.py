@@ -39,13 +39,16 @@ Du hast Zugriff auf:
 - Moodle-Noten aus laufenden Kursen (get_moodle_grades) — ergänzen das Bild
 
 Vorgehen:
-1. Rufe ALLE relevanten Tools auf, um ein vollständiges Bild zu bekommen
+1. Rufe die relevanten Tools auf, um ein vollständiges Bild zu bekommen
 2. Erkenne Muster in den Fehlern (z.B. immer falsch bei Faktenfragen)
-3. Für JEDES schwache Modul/Thema: rufe find_prerequisites mit dem Modul-/Quiz-Namen auf.
+3. Für die schwachen Module/Themen: rufe find_prerequisites mit dem Modul-/Quiz-Namen auf.
    Gibt es Vorgängermodule, EMPFIEHL ausdrücklich, zuerst diese Vorgänger zu wiederholen
    ("Lücke an der Wurzel beheben"). Gibt es kein Modulhandbuch, lass diesen Schritt aus.
-4. Priorisiere Schwachstellen nach Häufigkeit und Wichtigkeit
-5. Gib 3–5 konkrete, handlungsorientierte Empfehlungen
+4. REAGIERE auf die wichtigste Schwäche: rufe EINMAL ask_tutor mit dem EINEN wichtigsten
+   schwachen Thema auf, um eine konkrete Kurz-Erklärung + Übungstipp zu bekommen, und
+   integriere sie in deine Empfehlung. (Nur einmal — nicht für jedes Thema.)
+5. Priorisiere Schwachstellen nach Häufigkeit und Wichtigkeit
+6. Gib 3–5 konkrete, handlungsorientierte Empfehlungen
 
 Antworte auf Deutsch. Nutze klare Struktur mit Abschnitten und Aufzählungen.
 Sei konstruktiv und motivierend.
@@ -274,6 +277,26 @@ def create_evaluator_agent(db: AsyncSession, llm=None):
         """
         return await get_moodle_grades_context(course_name or None)
 
+    @tool
+    async def ask_tutor(topic: str) -> str:
+        """Ruft den TUTOR-Agenten auf, um zum wichtigsten SCHWACHEN Thema eine kurze,
+        konkrete Erklärung samt Übungstipp zu bekommen (Agent-zu-Agent). Nutze dies
+        HÖCHSTENS EINMAL — nur für das eine wichtigste schwache Thema.
+
+        Args:
+            topic: Das schwache Thema/Modul, das erklärt werden soll.
+        """
+        from app.agents.tutor_agent import run_tutor_agent
+        from app.observability import trace_bus
+
+        trace_bus.publish("agent_start", "tutor", "Tutor (vom Evaluator aufgerufen)", topic[:120])
+        out = await run_tutor_agent(
+            f"Erkläre kurz und verständlich das Thema »{topic}« und gib EINEN konkreten Übungs-/Lerntipp.",
+            db, None, "local",
+        )
+        trace_bus.publish("agent_end", "tutor", "Tutor fertig (für Evaluator)", out[:120], status="ok")
+        return out
+
     llm = llm or get_llm(temperature=0.3)
     return create_agent(
         model=llm,
@@ -285,6 +308,7 @@ def create_evaluator_agent(db: AsyncSession, llm=None):
             find_prerequisites,
             list_curriculum_modules,
             get_moodle_grades,
+            ask_tutor,
         ],
         prompt=_SYSTEM_PROMPT,
     )

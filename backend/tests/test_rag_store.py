@@ -30,7 +30,9 @@ def test_embed_texts_returns_vectors_from_genai():
     fake_client.models.embed_content.return_value = MagicMock(
         embeddings=[MagicMock(values=[0.1, 0.2]), MagicMock(values=[0.3, 0.4])]
     )
-    with patch.object(store, "get_genai_client", return_value=fake_client):
+    # Gemini-Pfad testen → lokale Embeddings deaktivieren
+    with patch.object(store.settings, "use_local_embeddings", False), \
+            patch.object(store, "get_genai_client", return_value=fake_client):
         result = store.embed_texts(["a", "b"])
     assert result == [[0.1, 0.2], [0.3, 0.4]]
     fake_client.models.embed_content.assert_called_once()
@@ -39,7 +41,8 @@ def test_embed_texts_returns_vectors_from_genai():
 def test_embed_texts_swallows_api_errors():
     fake_client = MagicMock()
     fake_client.models.embed_content.side_effect = RuntimeError("api down")
-    with patch.object(store, "get_genai_client", return_value=fake_client):
+    with patch.object(store.settings, "use_local_embeddings", False), \
+            patch.object(store, "get_genai_client", return_value=fake_client):
         result = store.embed_texts(["a"])
     assert result == []
 

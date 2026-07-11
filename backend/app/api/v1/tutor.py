@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,8 +11,14 @@ from app.models.attempt_answer import AttemptAnswer
 from app.models.quiz import Quiz
 from app.models.quiz_attempt import QuizAttempt
 from app.models.quiz_question import QuizQuestion
+from app.agents.evaluator_agent import run_evaluator_agent
 from app.agents.tutor_agent import generate_quiz_review
 from app.services.tutor_service import generate_quiz
+
+logger = logging.getLogger(__name__)
+
+# Ab diesem Ergebnis (in %) startet der Evaluator-Agent automatisch nach einem Quiz.
+_AUTO_EVAL_THRESHOLD = 80
 
 router = APIRouter(prefix="/api/tutor")
 
@@ -76,6 +83,8 @@ class AttemptResultOut(BaseModel):
     total_questions: int
     percentage: float
     answers: list[AnswerResultOut]
+    # Automatische Lernanalyse des Evaluator-Agents (nur bei < 80 %).
+    evaluation: str | None = None
 
 
 class ReviewRequest(BaseModel):
@@ -211,7 +220,8 @@ async def submit_attempt(quiz_id: int, body: SubmitAttemptRequest, db: AsyncSess
 
     try:
         quiz_result = await db.execute(select(Quiz).where(Quiz.id == quiz_id))
-        if quiz_result.scalar_one_or_none() is None:
+        quiz = quiz_result.scalar_one_or_none()
+        if quiz is None:
             raise HTTPException(status_code=404, detail="Quiz nicht gefunden.")
 
         q_result = await db.execute(
@@ -265,12 +275,32 @@ async def submit_attempt(quiz_id: int, body: SubmitAttemptRequest, db: AsyncSess
         await db.rollback()
         raise HTTPException(status_code=503, detail="Ergebnis konnte nicht gespeichert werden.")
 
+    percentage = round(score / total * 100, 1) if total else 0.0
+
+    # Bei schwachem Ergebnis (< 80 %) startet der Evaluator-Agent AUTOMATISCH: er erkennt
+    # Lernschwächen (auch modulübergreifend) und reagiert — empfiehlt Vorgängermodule und
+    # ruft bei Bedarf den Tutor auf. Fehler dürfen die Abgabe nicht blockieren.
+    evaluation = None
+    if percentage < _AUTO_EVAL_THRESHOLD:
+        module = quiz.course_name or ", ".join(quiz.source_documents or []) or quiz.title
+        request = (
+            f"Der/die Studierende hat gerade das Quiz »{quiz.title}« (Modul/Thema: {module}) "
+            f"mit {percentage}% ({score}/{total}) abgeschlossen — ein schwaches Ergebnis. "
+            "Analysiere die Lernschwächen (auch modulübergreifend anhand aller Quiz-Daten), "
+            "empfiehl konkret die Vorgängermodule zum Wiederholen und die nächsten Schritte."
+        )
+        try:
+            evaluation = await run_evaluator_agent(request, db)
+        except Exception as exc:
+            logger.warning("Automatische Evaluator-Analyse fehlgeschlagen: %s", exc)
+
     return AttemptResultOut(
         attempt_id=attempt.id,
         score=score,
         total_questions=total,
-        percentage=round(score / total * 100, 1) if total else 0.0,
+        percentage=percentage,
         answers=answer_results,
+        evaluation=evaluation,
     )
 
 

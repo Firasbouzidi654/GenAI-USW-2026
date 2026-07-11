@@ -49,14 +49,15 @@ def _clean(text: str | None, limit: int = 240) -> str:
     return t[:limit]
 
 
-async def _search_adzuna(keywords: list[str], location: str, limit: int, student: bool) -> list[dict]:
+async def _search_adzuna(keywords: list[str], location: str, limit: int, student: bool, study_program: str = "") -> list[dict]:
     country = settings.adzuna_country or "de"
     url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/1"
+    what_or_terms = keywords[:4] + ([study_program] if study_program else [])
     params = {
         "app_id": settings.adzuna_app_id,
         "app_key": settings.adzuna_app_key,
         "results_per_page": limit * 3 if student else limit,
-        "what_or": " ".join(keywords[:4]),
+        "what_or": " ".join(what_or_terms),
         "where": location,
         "content-type": "application/json",
     }
@@ -91,13 +92,15 @@ async def _search_adzuna(keywords: list[str], location: str, limit: int, student
     return jobs
 
 
-async def _search_arbeitnow(keywords: list[str], limit: int, student: bool) -> list[dict]:
+async def _search_arbeitnow(keywords: list[str], limit: int, student: bool, study_program: str = "") -> list[dict]:
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(_ARBEITNOW_URL)
         resp.raise_for_status()
         data = resp.json()
 
     terms = [k.lower() for k in keywords if k]
+    if study_program:
+        terms.append(study_program.lower())
     scored: list[tuple[int, dict]] = []
     for r in data.get("data", []):
         title = r.get("title", "")
@@ -133,11 +136,13 @@ async def search_jobs(
     location: str | None = None,
     limit: int = 8,
     student: bool | None = None,
+    study_program: str = "",
 ) -> list[dict]:
     """Sucht echte Stellen zu den Stichwörtern. Gibt bei Fehlern [] zurück.
 
     student=True (Standard via Config) → es werden ausschließlich Werkstudentenstellen
-    zurückgegeben.
+    zurückgegeben. study_program (z.B. „Wirtschaftsinformatik") wird als zusätzliches
+    Stichwort berücksichtigt, da es in Werkstudenten-Ausschreibungen häufig genannt wird.
     """
     keywords = [k for k in (keywords or []) if k and k.strip()]
     if not keywords:
@@ -148,8 +153,8 @@ async def search_jobs(
 
     try:
         if settings.adzuna_app_id and settings.adzuna_app_key:
-            return await _search_adzuna(keywords, location, limit, student)
-        return await _search_arbeitnow(keywords, limit, student)
+            return await _search_adzuna(keywords, location, limit, student, study_program)
+        return await _search_arbeitnow(keywords, limit, student, study_program)
     except Exception as exc:
         logger.warning("Stellensuche fehlgeschlagen (%s): %s", active_source(), exc)
         return []

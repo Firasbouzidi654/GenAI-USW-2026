@@ -202,7 +202,10 @@ async def get_career_analysis(db: AsyncSession = Depends(get_db)):
         return empty_analysis()
 
     try:
-        analysis = await get_ai_career_analysis(courses, cv_text=cv_text, quiz_topics=quiz_topics)
+        analysis = await get_ai_career_analysis(
+            courses, cv_text=cv_text, quiz_topics=quiz_topics,
+            study_program=settings.study_program,
+        )
     except RuntimeError as exc:
         logger.error("Career AI analysis failed: %s", exc)
         raise HTTPException(
@@ -236,17 +239,19 @@ async def get_career_analysis(db: AsyncSession = Depends(get_db)):
             role["title"], location=settings.job_location, experience="entry"
         )
 
-    # Echte Stellenanzeigen — primär nach den Technologien/Kompetenzen der starken Module
+    # Echte Stellenanzeigen — primär nach den Technologien/Kompetenzen der starken Module.
+    # Der Studiengang fließt als zusätzliches Stichwort ein (steht oft in Werkstudenten-Ausschreibungen).
     analysis["job_source"] = active_source()
+    prog = settings.study_program
     if job_keywords:
-        analysis["jobs"] = await search_jobs(job_keywords[:5], limit=8)
+        analysis["jobs"] = await search_jobs(job_keywords[:5], limit=8, study_program=prog)
     else:
         # Fallback: stark belegte KI-Skills (≥90 %), sonst beste Rolle
         strong_skills = [s["name"] for s in analysis.get("skills", []) if s.get("percent", 0) >= 90]
         if strong_skills:
-            analysis["jobs"] = await search_jobs(strong_skills[:4], limit=8)
+            analysis["jobs"] = await search_jobs(strong_skills[:4], limit=8, study_program=prog)
         elif roles:
-            analysis["jobs"] = await search_jobs([roles[0]["title"]], limit=8)
+            analysis["jobs"] = await search_jobs([roles[0]["title"]], limit=8, study_program=prog)
 
     return analysis
 

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.v1 import calendar, career, curriculum, email_agent, evaluator, exams, grades, history, job_agent, lsf_mock, moodle, planner, profile, prompt, study_advisor, tutor, upload
+from app.core.config import settings
 from app.core.database import Base, engine
 import app.models
 
@@ -25,7 +26,17 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text("ALTER TABLE curriculum_modules ADD COLUMN IF NOT EXISTS module_type VARCHAR(32)"))
     except Exception:
         pass
-    yield
+
+    # Observability-Dashboard (nur Präsentation, eigener Port) optional starten.
+    if settings.observability_enabled:
+        from app.observability import server as obs_server
+        await obs_server.start(settings.observability_port)
+    try:
+        yield
+    finally:
+        if settings.observability_enabled:
+            from app.observability import server as obs_server
+            await obs_server.stop()
 
 
 app = FastAPI(title="KI-Lern- & Jobagent API", version="0.1.0", lifespan=lifespan)

@@ -55,15 +55,36 @@ def get_collection():
         return None
 
 
-def embed_texts(texts: Iterable[str]) -> list[list[float]]:
-    """Erzeugt Embeddings für eine Liste von Texten via Gemini.
+_local_embedder = None
 
-    Gibt bei Fehlern eine leere Liste zurück, damit Aufrufer defensiv
-    weiterarbeiten können.
+
+def _get_local_embedder():
+    """Lädt (lazy) das lokale fastembed-Modell; wirft, wenn nicht verfügbar."""
+    global _local_embedder
+    if _local_embedder is None:
+        from fastembed import TextEmbedding
+        _local_embedder = TextEmbedding(model_name=settings.local_embedding_model)
+    return _local_embedder
+
+
+def embed_texts(texts: Iterable[str]) -> list[list[float]]:
+    """Erzeugt Embeddings für eine Liste von Texten.
+
+    Standard: lokale Embeddings (fastembed) — kein API-Ratenlimit, offline. Bei Fehler
+    (oder ``use_local_embeddings=False``) Fallback auf Gemini. Gibt bei Fehlern eine
+    leere Liste zurück, damit Aufrufer defensiv weiterarbeiten können.
     """
     texts = [t for t in texts if t and t.strip()]
     if not texts:
         return []
+
+    if settings.use_local_embeddings:
+        try:
+            embedder = _get_local_embedder()
+            return [[float(x) for x in vec] for vec in embedder.embed(list(texts))]
+        except Exception as exc:
+            logger.warning("Lokale Embeddings fehlgeschlagen (%s) — Fallback auf Gemini.", exc)
+
     try:
         client = get_genai_client()
         result = client.models.embed_content(

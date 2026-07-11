@@ -766,6 +766,13 @@
                   <span class="tutor-score-fraction">{{ tutorResults.score }}&thinsp;/&thinsp;{{ tutorResults.total_questions }}</span>
                   <span class="tutor-score-pct">{{ tutorResults.percentage }}%</span>
                 </div>
+
+                <!-- Automatische Lernanalyse (Evaluator-Agent, bei < 80 %) -->
+                <div v-if="tutorResults.evaluation" class="quiz-autoeval">
+                  <p class="quiz-autoeval-label"><UiIcon name="web-test" fallback="🧠" /> Automatische Lernanalyse</p>
+                  <div class="quiz-autoeval-text markdown" v-html="renderMarkdown(tutorResults.evaluation)"></div>
+                </div>
+
                 <div class="tutor-result-list">
                   <div
                     v-for="ans in tutorResults.answers" :key="ans.question_id"
@@ -1087,6 +1094,42 @@
               <span v-else class="bubble-text">{{ msg.content }}<span class="cursor">▋</span></span>
             </template>
             <span v-else class="bubble-text">{{ msg.content }}</span>
+
+            <!-- Herkunft: welche Tools + welche Dokumente wurden genutzt -->
+            <div
+              v-if="msg.role === 'assistant' && msg.meta && ((msg.meta.tools && msg.meta.tools.length) || (msg.meta.sources && msg.meta.sources.length)) && (!loading || i < messages.length - 1)"
+              class="msg-provenance"
+            >
+              <div v-if="msg.meta.tools && msg.meta.tools.length" class="prov-row">
+                <span class="prov-label"><UiIcon name="robot" fallback="🔧" /> Verwendete Tools</span>
+                <span v-for="t in msg.meta.tools" :key="t" class="prov-chip prov-chip--tool">{{ t }}</span>
+              </div>
+              <div v-if="msg.meta.sources && msg.meta.sources.length" class="prov-row">
+                <span class="prov-label"><UiIcon name="book" fallback="📚" /> Quellen</span>
+                <span
+                  v-for="(s, si) in msg.meta.sources" :key="si"
+                  class="prov-chip prov-chip--src"
+                  :class="{ 'prov-chip--clickable': s.kind !== 'moodle' }"
+                  :title="(s.course ? s.course + ' · ' : '') + s.name"
+                  @click.stop="s.kind !== 'moodle' && openDocument(s.name)"
+                >
+                  <UiIcon name="clip" fallback="📄" />
+                  {{ s.course ? s.course + ' — ' : '' }}{{ truncateName(s.name, 28) }}
+                  <span v-if="s.kind === 'moodle'" class="prov-tag">Moodle</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Im Chat erstelltes Quiz → im Quiz-Tab öffnen -->
+            <div
+              v-if="msg.role === 'assistant' && msg.meta && msg.meta.quiz && (!loading || i < messages.length - 1)"
+              class="chat-quiz-cta"
+            >
+              <button class="chat-quiz-btn" @click.stop="openChatQuiz(msg.meta.quiz.id)">
+                <UiIcon name="web-test" fallback="🧠" /> Quiz öffnen ({{ msg.meta.quiz.question_count }} Fragen)
+              </button>
+            </div>
+
             <div
               v-if="msg.role === 'assistant' && msg.actions && msg.actions.length && (!loading || i < messages.length - 1)"
               class="message-actions"
@@ -1790,7 +1833,7 @@ export default {
     this.fetchPlannerEvents()
     this.fetchTutorDocuments()
     this.fetchGrades()
-    this.fetchCareerAnalysis()
+    // Career-Analyse NICHT beim Start laden (teurer LLM-Call) — erst beim Öffnen des Tabs.
     this._clockTimer = setInterval(() => { this.currentTime = new Date() }, 1000)
     this.speechSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
     this.speechLang = localStorage.getItem('speechLang') || 'auto'
@@ -1816,7 +1859,12 @@ export default {
       this.mainView = 'chat'
       this.activePanel = this.activePanel === id ? null : id
       if (this.activePanel === 'profil') { this.fetchProfile(); this.fetchCurriculumStatus() }
-      if (this.activePanel === 'career' && this.cvStatus === null) this.fetchCvStatus()
+      if (this.activePanel === 'career') {
+        if (this.cvStatus === null) this.fetchCvStatus()
+        // Nur beim ERSTEN Öffnen laden (teurer LLM-Call); danach gecached.
+        // Manuelles Neuladen über den Refresh-Button bleibt möglich.
+        if (!this.careerAnalysis && !this.careerLoading) this.fetchCareerAnalysis()
+      }
     },
     openMoodlePage() {
       this.mainView = 'moodle'
@@ -2296,6 +2344,12 @@ export default {
     },
     // --- END VOICE INPUT ---
 
+    // Erkennt die Bitte, einen Lern-/Wochenplan zu erstellen (→ Planner-Tab).
+    isStudyPlanRequest(text) {
+      const t = (text || '').toLowerCase()
+      if (/\b(lernplan|wochenplan|study plan|lernwoche)\b/.test(t)) return true
+      return /\b(erstell|generier|mach|plan)\w*/.test(t) && /\b(lernen|lernplan|woche)\b/.test(t)
+    },
     // --- STUDY ADVISOR: keyword list that triggers the planner-aware AI ---
     isPlannerQuestion(text) {
       const keywords = [
@@ -2454,6 +2508,42 @@ export default {
       await this.$nextTick()
       this.scrollToBottom()
 
+      // --- LERNPLAN/WOCHENPLAN: echten Plan im Planner-Tab erstellen + automatisch dahin wechseln ---
+      if (!usePromptChat && this.isStudyPlanRequest(userPrompt)) {
+        try {
+          const res = await fetch('/api/planner/study-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ horizon_days: 7 })
+          })
+          if (res.ok) {
+            const data = await res.json()
+            this.studyPlan = data.plan || ''
+            if (this.studyPlan) {
+              this.studyPlanDate = new Date().toISOString()
+              try {
+                localStorage.setItem('studyPlan', this.studyPlan)
+                localStorage.setItem('studyPlanDate', this.studyPlanDate)
+              } catch { /* localStorage voll */ }
+            }
+            this.messages[this.messages.length - 1].content =
+              'Ich habe dir einen 7-Tage-Lernplan erstellt — du findest ihn im **Planner**-Tab. Ich habe dich direkt dorthin weitergeleitet.'
+            this.activePanel = 'planner'
+            this.mainView = 'chat'
+          } else {
+            this.messages[this.messages.length - 1].content =
+              'Der Lernplan konnte gerade nicht erstellt werden. Bitte später erneut versuchen.'
+          }
+        } catch {
+          this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
+        } finally {
+          this.loading = false
+          this.saveMessages()
+        }
+        return
+      }
+      // --- END LERNPLAN ---
+
       // --- STUDY ADVISOR: route planner-related questions to the Study Advisor ---
       if (!usePromptChat && this.isPlannerQuestion(userPrompt)) {
         try {
@@ -2505,6 +2595,15 @@ export default {
             if (raw === '[DONE]' || raw === '[ERROR]') return
             let data
             try { data = JSON.parse(raw) } catch { data = raw }
+            // Provenance-Meta (verwendete Tools + Quellen) — nicht als Text anhängen
+            if (data && typeof data === 'object' && data.meta) {
+              this.messages[this.messages.length - 1].meta = data.meta
+              // Im Chat erstelltes Quiz → automatisch zum Quiz-Tab wechseln und öffnen
+              if (data.meta.quiz && data.meta.quiz.id) {
+                this.openChatQuiz(data.meta.quiz.id)
+              }
+              continue
+            }
             this.messages[this.messages.length - 1].content += data
             this.$nextTick(() => this.scrollToBottom())
           }
@@ -3283,6 +3382,23 @@ export default {
     },
     closePdfViewer() {
       this.pdfViewer = null
+    },
+    async openChatQuiz(quizId) {
+      // Lädt ein im Chat erstelltes Quiz und öffnet es im Quiz-Tab.
+      if (!quizId) return
+      try {
+        const res = await fetch(`/api/tutor/quiz/${quizId}`)
+        if (!res.ok) { this.tutorStatus = { type: 'error', message: 'Quiz konnte nicht geladen werden.' }; return }
+        this.tutorQuiz = await res.json()
+        this.tutorAnswers = {}
+        this.tutorCurrentQuestion = 0
+        this.tutorResults = null
+        this.quizReview = ''
+        this.tutorView = 'quiz'
+        this.activePanel = 'quiz'
+      } catch {
+        this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      }
     },
     resetTutorQuiz() {
       this.tutorView = 'setup'
@@ -4293,6 +4409,52 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   margin-top: 10px;
   padding-top: 9px;
   border-top: 1px solid var(--border);
+}
+
+/* Automatische Lernanalyse (Evaluator) im Quiz-Ergebnis */
+.quiz-autoeval {
+  margin: 14px 0;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--primary-dim);
+  border: 1px solid var(--primary);
+}
+.quiz-autoeval-label { font-size: 13px; font-weight: 700; color: var(--primary); margin: 0 0 8px; }
+.quiz-autoeval-text { font-size: 14px; line-height: 1.55; color: var(--text); }
+
+/* Im Chat erstelltes Quiz → Öffnen-Button */
+.chat-quiz-cta { margin-top: 10px; }
+.chat-quiz-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 16px; border-radius: 9px; border: none;
+  background: var(--primary); color: #fff; font-weight: 600; font-size: 13.5px;
+  cursor: pointer;
+}
+.chat-quiz-btn:hover { background: var(--primary-hover); }
+
+/* Herkunft/Provenance unter der Antwort */
+.msg-provenance {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prov-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.prov-label { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-right: 4px; }
+.prov-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.prov-chip--tool { color: var(--primary); background: var(--primary-dim); border-color: transparent; }
+.prov-chip--src { color: var(--text); }
+.prov-chip--clickable { cursor: pointer; }
+.prov-chip--clickable:hover { border-color: var(--primary); }
+.prov-tag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .3px;
+  padding: 1px 5px; border-radius: 5px; background: #f59e0b; color: #1a1206;
 }
 
 .message-actions-label {

@@ -19,6 +19,7 @@ from app.agents.base import ainvoke_with_model_fallback
 from app.agents.orchestrator import run_orchestrator
 from app.core.database import get_db
 from app.models.chat import ChatMessage
+from app.observability import trace_bus
 
 router = APIRouter()
 
@@ -104,35 +105,58 @@ async def prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
     """Orchestrator beantwortet die Frage und koordiniert dafür die Spezial-Agents."""
 
     async def generate():
+        # Live-Trace für das Observability-Dashboard (eigener Port, Präsentation)
+        trace_id = trace_bus.new_trace_id()
+        token = trace_bus.set_trace_id(trace_id)
+        # Provenance sammeln (welche Tools + Quell-Dokumente); wird am Ende mitgeschickt.
+        prov = trace_bus.start_provenance()
+        trace_bus.publish("chat_input", "chat", "Chat-Eingabe", body.prompt[:200], trace_id=trace_id)
         try:
-            answer = await run_orchestrator(
-                body.prompt,
-                db,
-                body.chat_id,
-                body.user_id,
-                moodle_context=body.moodle_context,
-            )
-        except Exception:
-            yield f"data: {json.dumps('[ERROR]')}\n\n"
+            try:
+                answer = await run_orchestrator(
+                    body.prompt,
+                    db,
+                    body.chat_id,
+                    body.user_id,
+                    moodle_context=body.moodle_context,
+                )
+            except Exception:
+                trace_bus.publish("error", "output", "Fehler bei der Verarbeitung", "", status="error")
+                yield f"data: {json.dumps('[ERROR]')}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            trace_bus.publish("output", "output", "Antwort an den Chat", answer[:200], status="ok")
+            trace_bus.publish("done", "output", "Fertig", "", status="ok")
+
+            # Antwort in sinnvolle Chunks aufteilen (wortweise), damit das SSE-Streaming
+            # beim Client weiterhin animiert wirkt (TutorAgent gibt erst am Ende zurück)
+            words = answer.split(" ")
+            chunk_size = 8
+            for i in range(0, len(words), chunk_size):
+                chunk = " ".join(words[i:i + chunk_size])
+                if i + chunk_size < len(words):
+                    chunk += " "
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            try:
+                db.add(ChatMessage(prompt=body.prompt, response=answer))
+                await db.commit()
+            except Exception:
+                pass
+
+            # Provenance (Tools + Quellen) und ggf. ein erstelltes Quiz an den Chat mitschicken.
+            try:
+                meta = {"tools": prov["tools"], "sources": prov["sources"]}
+                if prov.get("quiz"):
+                    meta["quiz"] = prov["quiz"]
+                yield f"data: {json.dumps({'meta': meta})}\n\n"
+            except Exception:
+                pass
+
             yield "data: [DONE]\n\n"
-            return
-
-        # Antwort in sinnvolle Chunks aufteilen (wortweise), damit das SSE-Streaming
-        # beim Client weiterhin animiert wirkt (TutorAgent gibt erst am Ende zurück)
-        words = answer.split(" ")
-        chunk_size = 8
-        for i in range(0, len(words), chunk_size):
-            chunk = " ".join(words[i:i + chunk_size])
-            if i + chunk_size < len(words):
-                chunk += " "
-            yield f"data: {json.dumps(chunk)}\n\n"
-
-        try:
-            db.add(ChatMessage(prompt=body.prompt, response=answer))
-            await db.commit()
-        except Exception:
-            pass
-
-        yield "data: [DONE]\n\n"
+        finally:
+            trace_bus.clear_provenance()
+            trace_bus.reset_trace_id(token)
 
     return StreamingResponse(generate(), media_type="text/event-stream")

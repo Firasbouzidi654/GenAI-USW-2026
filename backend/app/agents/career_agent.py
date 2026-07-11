@@ -58,21 +58,24 @@ class _CareerAnalysisSchema(BaseModel):
 # ── System-Prompts ────────────────────────────────────────────────────────────
 
 _ANALYSIS_SYSTEM_PROMPT = """
-Du bist ein KI-Karriereberater, der das Notenblatt eines Studierenden analysiert.
+Du bist ein KI-Karriereberater für einen STUDIERENDEN (noch im Studium), der neben dem
+Studium eine WERKSTUDENTENSTELLE sucht. Analysiere sein Notenblatt.
 
 Analysiere frei — kein festes Skill-Set, nur was die tatsächlichen Kurse belegen.
-Empfehle 3–5 passende Berufsfelder mit konkreten Lernpfaden.
+Empfehle 3–5 passende WERKSTUDENTEN-Rollen mit konkreten Lernpfaden.
 
 Skills (5–10 Einträge):
 - Nur Skills die wirklich durch Kurse belegt sind
 - Fehlende wichtige Skills mit score=0 als Gap markieren
 - matched_courses: exakte Kursnamen aus dem Input
 
-Rollen:
-- Realistische Job-Titel aus dem deutschen Markt
+Rollen (WICHTIG — es sind WERKSTUDENTEN-Stellen, KEINE Vollzeitjobs):
+- title: als Werkstudentenrolle formulieren, z.B. „Werkstudent:in Business Intelligence".
+  Berücksichtige den angegebenen STUDIENGANG (die Rolle muss dazu passen).
 - missing_skills: konkrete Tools/Technologien (nicht vage)
 - recommended_certifications: echte, bekannte Zertifikate
-- salary_range_eur: Format '€55.000 – €75.000 pro Jahr'
+- salary_range_eur: WERKSTUDENTEN-Vergütung als STUNDENLOHN, Format '€15 – €20 pro Stunde'
+  (NIEMALS ein Vollzeit-Jahresgehalt).
 - market_demand: 'Very High' | 'High' | 'Medium' | 'Low'
 """.strip()
 
@@ -271,6 +274,7 @@ async def get_ai_career_analysis(
     courses: list[dict],
     cv_text: str | None = None,
     quiz_topics: list[dict] | None = None,
+    study_program: str | None = None,
 ) -> dict:
     """Strukturierte Karriere-Analyse via LangChain Structured Output.
 
@@ -284,7 +288,8 @@ async def get_ai_career_analysis(
         credit_str = f", {credits} ECTS" if credits else ""
         lines.append(f"- {c.get('course_name') or 'Unbekannter Kurs'} | Note: {grade}{credit_str}")
 
-    user_prompt = "Notenblatt des Studierenden:\n" + "\n".join(lines)
+    header = f"Studiengang: {study_program}\n\n" if study_program else ""
+    user_prompt = header + "Notenblatt des Studierenden:\n" + "\n".join(lines)
 
     if cv_text:
         user_prompt += f"\n\nLebenslauf:\n{cv_text}"

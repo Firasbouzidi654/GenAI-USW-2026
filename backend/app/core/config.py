@@ -13,15 +13,21 @@ class Settings(BaseSettings):
     chroma_port: int = 8000
     chroma_collection: str = "documents"
     embedding_model: str = "gemini-embedding-001"
+    # Lokale Embeddings (fastembed) statt Gemini — kein API-Ratenlimit, schnell, offline.
+    # Fällt bei Fehler auf Gemini (embedding_model) zurück.
+    use_local_embeddings: bool = True
+    local_embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     rag_chunk_size: int = 1000
     rag_chunk_overlap: int = 150
     rag_top_k: int = 4
     # Paste the n8n Production Webhook URL here (see README for setup instructions)
     n8n_job_agent_webhook_url: str = ""
-    # Comma-separated fallback chain, tried in order (see app.agents.base.run_with_model_fallback)
+    # Comma-separated fallback chain, tried in order (see app.agents.base.run_with_model_fallback).
+    # Nur Modelle mit freiem Kontingent + Tool-/Structured-Output-Support (Stand 2026):
+    # 2.5-flash/2.0-*/1.5-* sind auf der Free-Stufe erschöpft bzw. nicht mehr verfügbar.
     gemini_models: str = (
-        "gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,"
-        "gemini-1.5-flash,gemini-1.5-pro"
+        "gemini-3.5-flash,gemini-3-flash-preview,"
+        "gemini-3.1-flash-lite,gemini-2.5-flash-lite"
     )
     # Optional Groq fallback. If GROQ_API_KEY is missing, the app stays Gemini-only.
     groq_api_key: str = ""
@@ -43,6 +49,12 @@ class Settings(BaseSettings):
     job_location: str = "Berlin"
     # App wird von Studierenden genutzt → standardmäßig nur Werkstudentenstellen.
     job_student_only: bool = True
+    # Studiengang der/des Studierenden — fließt in Career-Analyse und Jobsuche ein.
+    study_program: str = "Wirtschaftsinformatik"
+    # Observability-Dashboard (nur Präsentation, eigener Port, KEIN Teil der API).
+    # Mit OBSERVABILITY_ENABLED=1 starten; läuft dann parallel auf OBSERVABILITY_PORT.
+    observability_enabled: bool = False
+    observability_port: int = 8090
 
     @property
     def gemini_model_list(self) -> list[str]:

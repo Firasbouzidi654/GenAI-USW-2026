@@ -75,6 +75,97 @@ def has_indexed_source(
     return bool(result.get("ids"))
 
 
+def relevant_sources_for_query(
+    query: str,
+    metadata_filter: dict | None = None,
+    user_id: str | None = None,
+    n_results: int = 30,
+    max_files: int = 6,
+    margin: float = 0.15,
+) -> list[str]:
+    """Liefert die zum ``query`` thematisch relevanten Quell-Dokumente (Dateinamen).
+
+    Nutzt Vektor-Ähnlichkeit: eine Quelle gilt als relevant, wenn ihr bester Chunk
+    nah genug am besten Gesamttreffer liegt (``best + margin``). So wird z.B. für
+    „Virtualisierung" nur das Virtualisierungs-/Docker-Material gewählt statt des
+    ganzen Kurses. Rückgabe in Relevanz-Reihenfolge, max. ``max_files`` Dateien.
+    """
+    if not query or not query.strip():
+        return []
+    collection = get_collection()
+    if collection is None:
+        return []
+    embeddings = embed_texts([query])
+    if not embeddings:
+        return []
+    where = _build_where(None, None, user_id, metadata_filter)
+    kwargs: dict = {"query_embeddings": embeddings, "n_results": n_results,
+                    "include": ["metadatas", "distances"]}
+    if where is not None:
+        kwargs["where"] = where
+    try:
+        result = collection.query(**kwargs)
+    except Exception as exc:
+        logger.warning("Relevanz-Quellensuche fehlgeschlagen: %s", exc)
+        return []
+
+    metas = (result.get("metadatas") or [[]])[0]
+    dists = (result.get("distances") or [[]])[0]
+    best_per_source: dict[str, float] = {}
+    order: list[str] = []
+    for meta, dist in zip(metas, dists):
+        if not isinstance(meta, dict):
+            continue
+        src = meta.get("source")
+        if not src or dist is None:
+            continue
+        if src not in best_per_source:
+            best_per_source[src] = dist
+            order.append(src)
+        elif dist < best_per_source[src]:
+            best_per_source[src] = dist
+    if not order:
+        return []
+    best = min(best_per_source.values())
+    cutoff = best + margin
+    selected = [s for s in order if best_per_source[s] <= cutoff]
+    return (selected or order[:1])[:max_files]
+
+
+def count_indexed_chunks(
+    source_documents: list[str] | None = None,
+    metadata_filter: dict | None = None,
+    user_id: str | None = None,
+) -> int:
+    """Zählt die indexierten Chunks für die angegebenen Quellen (Maß für den Stoffumfang)."""
+    collection = get_collection()
+    if collection is None:
+        return 0
+    where = _build_where(source_documents, None, user_id, metadata_filter)
+    try:
+        result = collection.get(where=where, include=[])
+    except Exception as exc:
+        logger.warning("Chunk-Zählung fehlgeschlagen: %s", exc)
+        return 0
+    return len(result.get("ids") or [])
+
+
+def has_indexed_course(course_id, user_id: str | None = None) -> bool:
+    """Prüft, ob für einen Moodle-Kurs (course_id-Metadaten) bereits Chunks existieren."""
+    if course_id is None:
+        return False
+    collection = get_collection()
+    if collection is None:
+        return False
+    where = _build_where(None, None, user_id, {"course_id": course_id})
+    try:
+        result = collection.get(where=where, limit=1)
+    except Exception as exc:
+        logger.warning("Chroma-Kurs-Existenzcheck fehlgeschlagen: %s", exc)
+        return False
+    return bool(result.get("ids"))
+
+
 async def retrieve_context(
     query: str,
     source_filter: list[str] | None = None,
@@ -105,6 +196,17 @@ async def retrieve_context(
     """
     if not query or not query.strip():
         return ""
+
+    # Live-Trace (nur wenn eine Chat-Anfrage läuft) — Observability/Präsentation
+    try:
+        from app.observability import trace_bus
+        if trace_bus.current_trace_id.get():
+            scope = "Moodle-Kurs" if (metadata_filter or {}).get("course_id") else (
+                ", ".join(source_filter) if source_filter else "alle Dokumente"
+            )
+            trace_bus.publish("rag", "rag", "RAG-Vektorsuche", f"{query[:80]} · Quelle: {scope}")
+    except Exception:
+        pass
 
     collection = get_collection()
     if collection is None:
@@ -151,5 +253,21 @@ async def retrieve_context(
         if not filtered:
             return ""
         documents, metadatas = zip(*filtered)
+
+    # Genutzte Quell-Dokumente für die Provenance-Anzeige im Chat vermerken.
+    try:
+        from app.observability import trace_bus
+        if trace_bus.current_provenance.get() is not None:
+            for meta in metadatas:
+                if not isinstance(meta, dict):
+                    continue
+                name = meta.get("source") or meta.get("filename")
+                if not name:
+                    continue
+                course = meta.get("course_name")
+                kind = "moodle" if (meta.get("moodle") or course) else "upload"
+                trace_bus.add_source(str(name), kind, str(course) if course else None)
+    except Exception:
+        pass
 
     return _format_context(list(documents), list(metadatas))

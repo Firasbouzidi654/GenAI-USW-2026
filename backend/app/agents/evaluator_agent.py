@@ -22,6 +22,7 @@ from app.models.curriculum import CurriculumModule
 from app.models.quiz import Quiz
 from app.models.quiz_attempt import QuizAttempt
 from app.models.quiz_question import QuizQuestion
+from app.observability import trace_bus
 from app.services.moodle_context_service import get_moodle_grades_context
 
 logger = logging.getLogger(__name__)
@@ -287,15 +288,12 @@ def create_evaluator_agent(db: AsyncSession, llm=None):
             topic: Das schwache Thema/Modul, das erklärt werden soll.
         """
         from app.agents.tutor_agent import run_tutor_agent
-        from app.observability import trace_bus
 
-        trace_bus.publish("agent_start", "tutor", "Tutor (vom Evaluator aufgerufen)", topic[:120])
-        out = await run_tutor_agent(
+        # run_tutor_agent publiziert selbst agent_start/agent_end (siehe traced_agent).
+        return await run_tutor_agent(
             f"Erkläre kurz und verständlich das Thema »{topic}« und gib EINEN konkreten Übungs-/Lerntipp.",
             db, None, "local",
         )
-        trace_bus.publish("agent_end", "tutor", "Tutor fertig (für Evaluator)", out[:120], status="ok")
-        return out
 
     llm = llm or get_llm(temperature=0.3)
     return create_agent(
@@ -314,6 +312,7 @@ def create_evaluator_agent(db: AsyncSession, llm=None):
     )
 
 
+@trace_bus.traced_agent("evaluator", "Evaluator-Agent")
 async def run_evaluator_agent(message: str, db: AsyncSession) -> str:
     """Führt den EvaluatorAgent aus und gibt eine Wissenslücken-Analyse zurück."""
     try:

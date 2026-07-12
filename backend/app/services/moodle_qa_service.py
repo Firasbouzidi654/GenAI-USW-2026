@@ -166,6 +166,7 @@ _ANSWER_SYSTEM = (
 )
 
 
+@trace_bus.traced_agent("moodle", "Moodle-QA")
 async def answer_from_moodle(
     question: str,
     chat_id: str | None = None,
@@ -246,6 +247,46 @@ async def answer_from_moodle(
     return answer + f"\n\n_(Quelle: Moodle-Kurs »{course_name}«)_"
 
 
+_WEAKNESS_MARKERS = (
+    "schwäch", "schwaech", "wissenslück", "wissensluec", "schwachstell", "lücken", "luecken",
+    "weak", "die du findest", "wo ich schlecht", "meine fehler", "wo ich schwach",
+)
+
+
+def _is_weakness_quiz(topic: str) -> bool:
+    return any(m in (topic or "").lower() for m in _WEAKNESS_MARKERS)
+
+
+async def _pick_weakest_current_semester_course(courses: list[dict], db):
+    """Wählt anhand des Quiz-Profils das schwächste Modul des AKTUELLEN Semesters und
+    liefert den passenden Moodle-Kurs. Returns (course | None, hinweis)."""
+    from app.api.v1.tutor import _compute_topic_mastery
+    from app.core.config import settings
+    from app.services.moodle_context_service import _detect_course_semester
+
+    try:
+        topics = await _compute_topic_mastery(db)
+    except Exception:
+        topics = []
+    weak = sorted([t for t in topics if t.get("score", 100) < 80], key=lambda t: t.get("score", 100))
+    if not weak:
+        return None, "Ich habe in deinem Profil noch keine Schwächen gefunden — mach zuerst ein paar Quizze im Quiz-Tab."
+
+    cur = settings.current_semester
+    for t in weak:
+        course = moodle_service._match_course(courses, t.get("topic", ""))
+        if course is not None and _detect_course_semester(course) == cur:
+            trace_bus.publish(
+                "moodle", "moodle", f"Schwächstes Modul (Sem. {cur}): {t.get('topic')}",
+                f"{t.get('score')}%", status="ok",
+            )
+            return course, ""
+    return None, (
+        f"Deine erkannten Schwächen liegen aktuell nicht in Modulen des {cur}. Semesters "
+        "(oder ich konnte sie keinem Moodle-Kurs zuordnen). Nenne mir sonst kurz das Modul."
+    )
+
+
 async def create_quiz_from_moodle(
     topic: str,
     num_questions: int,
@@ -267,12 +308,19 @@ async def create_quiz_from_moodle(
     except moodle_service.MoodleError as exc:
         return None, f"Moodle-Kurse konnten nicht geladen werden: {exc}"
 
-    course = await _pick_course_for_question(topic, courses)
-    if course is None:
-        return None, (
-            "Zu welchem Modul soll ich das Quiz erstellen? Nenne bitte kurz das Modul "
-            "(z. B. »Quiz zu Verteilte Anwendungen«)."
-        )
+    # „Quiz für meine Schwächen" → schwächstes Modul des AKTUELLEN Semesters automatisch
+    # aus dem Profil wählen (statt nach einem Modul zu fragen).
+    if _is_weakness_quiz(topic):
+        course, hint = await _pick_weakest_current_semester_course(courses, db)
+        if course is None:
+            return None, hint
+    else:
+        course = await _pick_course_for_question(topic, courses)
+        if course is None:
+            return None, (
+                "Zu welchem Modul soll ich das Quiz erstellen? Nenne bitte kurz das Modul "
+                "(z. B. »Quiz zu Verteilte Anwendungen«)."
+            )
 
     course_id = course.get("id")
     course_name = course.get("fullname") or course.get("shortname") or "Moodle-Kurs"
@@ -292,11 +340,10 @@ async def create_quiz_from_moodle(
         files = []
     all_names = [f["filename"] for f in files if f.get("filename")]
 
-    # 1) Nennt die Anfrage eine WOCHE/einen Abschnitt (z.B. „Woche 3")? → gezielt danach
-    #    filtern (Moodle-Wochen-Struktur), NICHT semantisch.
-    section_files = _filter_files_by_section(files, topic)
-    topic_query = _quiz_topic_query(topic, course_name)
-    keyword_files = _filter_files_by_keyword(all_names, topic_query)
+    # Schwächen-Quiz → ganzes Modul abfragen (der verrauschte Anfragetext taugt nicht als Thema).
+    section_files = [] if _is_weakness_quiz(topic) else _filter_files_by_section(files, topic)
+    topic_query = "" if _is_weakness_quiz(topic) else _quiz_topic_query(topic, course_name)
+    keyword_files = _filter_files_by_keyword(all_names, topic_query) if topic_query else []
     if section_files:
         filenames = section_files
         trace_bus.publish("rag", "rag", "Woche/Abschnitt gewählt", ", ".join(filenames)[:200], status="ok")
@@ -325,7 +372,7 @@ async def create_quiz_from_moodle(
             f"aus {chunks} Abschnitten", status="ok",
         )
 
-    trace_bus.publish("agent_start", "tutor", "Tutor-Agent: Quiz generieren", f"{num_questions} Fragen · {course_name}")
+    # generate_quiz → generate_quiz_with_agent publiziert selbst die Tutor-Agent-Events.
     trace_bus.add_tool("Tutor-Agent (Quiz-Generierung)")
     try:
         quiz, _questions = await generate_quiz(
@@ -340,7 +387,7 @@ async def create_quiz_from_moodle(
         trace_bus.publish("error", "tutor", "Quiz-Generierung fehlgeschlagen", str(exc)[:120], status="error")
         return None, f"Ich konnte kein Quiz aus dem Material von {course_name} erstellen: {exc}"
 
-    trace_bus.publish("agent_end", "tutor", "Quiz erstellt", f"{quiz.question_count} Fragen", status="ok")
+    trace_bus.publish("tool", "tutor", "Quiz erstellt", f"{quiz.question_count} Fragen", status="ok")
     trace_bus.set_quiz({"id": quiz.id, "title": quiz.title, "question_count": quiz.question_count})
     return quiz, (
         f"Ich habe ein Quiz mit **{quiz.question_count} Fragen** zum Modul »{course_name}« erstellt "

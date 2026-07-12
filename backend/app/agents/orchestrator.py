@@ -27,12 +27,27 @@ from app.agents.career_agent import run_career_agent
 from app.agents.curriculum_agent import run_curriculum_agent
 from app.agents.evaluator_agent import run_evaluator_agent
 from app.agents.planner_agent import run_planner_agent
+from app.agents.response_sources import MOODLE_API_SOURCE, append_source
 from app.agents.tutor_agent import run_tutor_agent
 from app.core.config import settings
 from app.observability import trace_bus
 from app.services.moodle_context_service import get_moodle_context_for_message
 
 logger = logging.getLogger(__name__)
+
+# Zeitlimit für einen kompletten Orchestrator-Lauf (inkl. verketteter Agents).
+# Großzügig, damit Multi-Agent-Ketten (z.B. Evaluator + Career) durchlaufen — bei
+# Überschreitung wird NICHT das Modell gewechselt (siehe run_orchestrator).
+_ORCHESTRATOR_TIMEOUT = 120
+
+# Nur diese (schnell scheiternden) Fehler rechtfertigen einen Modellwechsel — bei ihnen
+# wurde noch nichts ausgeführt. Alles andere würde beim Re-Run alle Agents erneut aufrufen.
+_QUOTA_MARKERS = ("RESOURCE_EXHAUSTED", "429", "quota")
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(m.lower() in text for m in _QUOTA_MARKERS)
 
 _SUPERVISOR_SYSTEM_PROMPT = """
 Du bist der Supervisor-Agent einer Lern-App für Studierende an der HTW Berlin.
@@ -57,13 +72,18 @@ Deine Spezial-Agents (als Tools verfügbar):
 - ask_curriculum: Fragen zum STUDIENVERLAUF / MODULHANDBUCH — welche Module es gibt,
   welche in einem Semester vorgeschrieben sind, worauf ein Modul aufbaut. Nutze diesen
   Agent bei Fragen wie „Welche Module sind im 5. Semester?".
+- ask_create_quiz: Erstellt ein ECHTES Quiz (im Quiz-Tab). Für „erstelle ein Quiz zu X"
+  oder „Quiz zu meinen Schwächen" (wählt dann automatisch das schwächste Modul).
 
 Vorgehen:
 1. Verstehe, was der Studierende WIRKLICH will.
 2. Ist es eine fachliche Wissensfrage → ask_moodle. Sonst den passenden Spezial-Agent.
-3. Bei zusammengesetzten Anfragen darfst du Agents VERKETTEN.
-4. Fasse die Antworten der Agents zu EINER klaren Antwort zusammen — OHNE eigenes
-   Wissen hinzuzufügen. Gib nur wieder, was die Agents/Moodle liefern.
+3. Bei ZUSAMMENGESETZTEN Anfragen (mehrere Wünsche in einem Satz) rufe für JEDEN Teil den
+   passenden Agent auf und VERKETTE sie. Beispiel: „Wo stehe ich, welche Jobs passen, und
+   mach ein Quiz zu meinen Schwächen" → ask_evaluator, dann ask_career, dann ask_create_quiz.
+   Lass KEINEN Teil der Anfrage aus.
+4. Fasse die Antworten der Agents zu EINER klaren, gegliederten Antwort zusammen (nutze
+   Überschriften pro Teil) — OHNE eigenes Wissen hinzuzufügen.
 
 Regeln:
 - Erfinde keine Inhalte selbst — nutze immer die Agents für fachliche Antworten.
@@ -197,6 +217,10 @@ def _iter_moodle_context_labels(moodle_context: dict | None):
 def _is_selected_moodle_material_request(message: str, moodle_context: dict | None) -> bool:
     if not isinstance(moodle_context, dict) or not moodle_context.get("course_id"):
         return False
+    # Ist ein Material aktiv AUSGEWÄHLT, geht JEDE Frage an den Tutor mit diesem Material
+    # als Kontext (context-aware „Ask AI" zur ausgewählten Datei).
+    if moodle_context.get("selected_material") or moodle_context.get("selected_material_filename"):
+        return True
     text = (message or "").lower()
     if not text:
         return False
@@ -226,11 +250,8 @@ def create_orchestrator(
         Args:
             question: Die fachliche Frage des Studierenden.
         """
-        trace_bus.publish("agent_start", "tutor", "Tutor-Agent (RAG)", question[:160])
         trace_bus.add_tool("Tutor-Agent (hochgeladene Dokumente)")
-        out = await run_tutor_agent(question, db, chat_id, user_id, moodle_context=moodle_context)
-        trace_bus.publish("agent_end", "tutor", "Tutor-Agent fertig", out[:160], status="ok")
-        return out
+        return await run_tutor_agent(question, db, chat_id, user_id, moodle_context=moodle_context)
 
     @tool
     async def ask_moodle(question: str) -> str:
@@ -244,11 +265,8 @@ def create_orchestrator(
         """
         from app.services.moodle_qa_service import answer_from_moodle
 
-        trace_bus.publish("agent_start", "moodle", "Moodle-QA", question[:160])
         trace_bus.add_tool("Moodle-QA (Moodle-Kursmaterial)")
-        out = await answer_from_moodle(question, chat_id, user_id)
-        trace_bus.publish("agent_end", "moodle", "Moodle-QA fertig", out[:160], status="ok")
-        return out
+        return await answer_from_moodle(question, chat_id, user_id)
 
     @tool
     async def ask_evaluator(request: str) -> str:
@@ -258,11 +276,8 @@ def create_orchestrator(
         Args:
             request: Was analysiert werden soll (z.B. 'Wo sind meine Schwächen?').
         """
-        trace_bus.publish("agent_start", "evaluator", "Evaluator-Agent", request[:160])
         trace_bus.add_tool("Evaluator-Agent (Quiz-Ergebnisse)")
-        out = await run_evaluator_agent(request, db)
-        trace_bus.publish("agent_end", "evaluator", "Evaluator-Agent fertig", out[:160], status="ok")
-        return out
+        return await run_evaluator_agent(request, db)
 
     @tool
     async def ask_planner(request: str) -> str:
@@ -272,11 +287,8 @@ def create_orchestrator(
         Args:
             request: Die Planungsanfrage (z.B. 'Plane meine Woche').
         """
-        trace_bus.publish("agent_start", "planner", "Planner-Agent", request[:160])
         trace_bus.add_tool("Planner-Agent (Stundenplan/Deadlines)")
-        out = await run_planner_agent(request, db)
-        trace_bus.publish("agent_end", "planner", "Planner-Agent fertig", out[:160], status="ok")
-        return out
+        return await run_planner_agent(request, db)
 
     @tool
     async def ask_career(request: str) -> str:
@@ -286,11 +298,8 @@ def create_orchestrator(
         Args:
             request: Die Karrierefrage (z.B. 'Welcher Job passt zu mir?').
         """
-        trace_bus.publish("agent_start", "career", "Career-Agent", request[:160])
         trace_bus.add_tool("Career-Agent (Notenprofil)")
-        out = await run_career_agent(request, db)
-        trace_bus.publish("agent_end", "career", "Career-Agent fertig", out[:160], status="ok")
-        return out
+        return await run_career_agent(request, db)
 
     @tool
     async def ask_curriculum(request: str) -> str:
@@ -301,16 +310,28 @@ def create_orchestrator(
         Args:
             request: Die Frage zum Studienverlauf (z.B. 'Welche Module sind im 5. Semester?').
         """
-        trace_bus.publish("agent_start", "curriculum", "Curriculum-Agent", request[:160])
         trace_bus.add_tool("Curriculum-Agent (Modulhandbuch)")
-        out = await run_curriculum_agent(request, db)
-        trace_bus.publish("agent_end", "curriculum", "Curriculum-Agent fertig", out[:160], status="ok")
-        return out
+        return await run_curriculum_agent(request, db)
+
+    @tool
+    async def ask_create_quiz(topic: str) -> str:
+        """Erstellt ein ECHTES, gespeichertes Quiz (erscheint im Quiz-Tab). Für „erstelle
+        ein Quiz zu Modul X" ODER „Quiz zu meinen Schwächen" (dann wählt es automatisch das
+        schwächste Modul des aktuellen Semesters).
+
+        Args:
+            topic: Modul/Thema oder die ganze Quiz-Anfrage (z.B. 'Quiz zu meinen Schwächen').
+        """
+        from app.services.moodle_qa_service import create_quiz_from_moodle
+
+        trace_bus.add_tool("Tutor-Agent (Quiz-Erstellung)")
+        _quiz, text = await create_quiz_from_moodle(topic, 0, db, user_id)  # 0 = Anzahl automatisch
+        return text
 
     llm = llm or get_llm(temperature=0.2)
     return create_agent(
         model=llm,
-        tools=[ask_tutor, ask_moodle, ask_evaluator, ask_planner, ask_career, ask_curriculum],
+        tools=[ask_tutor, ask_moodle, ask_evaluator, ask_planner, ask_career, ask_curriculum, ask_create_quiz],
         prompt=_SUPERVISOR_SYSTEM_PROMPT,
     )
 
@@ -321,17 +342,22 @@ async def run_orchestrator(
     chat_id: str | None = None,
     user_id: str = "local",
     moodle_context: dict | None = None,
+    force_llm: bool = False,
 ) -> str:
     """Führt den Supervisor-Agent aus. Einstiegspunkt für das Multi-Agent-System.
 
     Der Supervisor entscheidet selbst, welche Spezial-Agents er aufruft, verkettet
     sie bei Bedarf und liefert eine integrierte Antwort.
+
+    force_llm=True überspringt die deterministischen Kurzschluss-Routen (Quiz/Moodle)
+    und lässt IMMER den LLM-Orchestrator entscheiden — nötig für zusammengesetzte Fragen,
+    die mehrere Agents (z.B. Evaluator + Career + Quiz) in EINER Antwort verketten sollen.
     """
     trace_bus.publish("agent_start", "orchestrator", "Orchestrator", message[:160])
 
     # Quiz-Erstellung: deterministisch erkennen und ein ECHTES Quiz (aus Moodle) bauen,
     # das im Quiz-Tab geöffnet werden kann — statt nur Fragen als Chattext.
-    num_questions = detect_quiz_request(message)
+    num_questions = None if force_llm else detect_quiz_request(message)
     if num_questions is not None:
         trace_bus.publish("route", "orchestrator", f"Direkt-Routing → Quiz erstellen ({num_questions} Fragen)", "", status="ok")
         from app.services.moodle_qa_service import create_quiz_from_moodle
@@ -340,17 +366,22 @@ async def run_orchestrator(
         trace_bus.publish("agent_end", "orchestrator", "Orchestrator fertig", text[:160], status="ok")
         return text
 
-    if _is_selected_moodle_material_request(message, moodle_context):
-        trace_bus.publish("route", "orchestrator", "Direkt-Routing → Moodle-Material (Tutor)", "", status="ok")
+    if not force_llm and _is_selected_moodle_material_request(message, moodle_context):
+        material = (moodle_context or {}).get("selected_material_filename") or (moodle_context or {}).get("selected_material")
+        question = (
+            f"{message}\n\n(Bezieht sich auf das ausgewählte Moodle-Material: {material})"
+            if material else message
+        )
+        trace_bus.publish("route", "orchestrator", "Direkt-Routing → Moodle-Material (Tutor)", str(material or "")[:120], status="ok")
         trace_bus.add_tool("Moodle-Material (ausgewählt)")
-        out = await run_tutor_agent(message, db, chat_id, user_id, moodle_context=moodle_context)
+        out = await run_tutor_agent(question, db, chat_id, user_id, moodle_context=moodle_context)
         trace_bus.publish("agent_end", "orchestrator", "Orchestrator fertig", out[:160], status="ok")
         return out
 
-    if _is_explicit_moodle_context_request(message):
+    if not force_llm and _is_explicit_moodle_context_request(message):
         trace_bus.publish("route", "orchestrator", "Direkt-Routing → Moodle-Kontext (ohne LLM)", "", status="ok")
         trace_bus.add_tool("Moodle-Kontext (Kurse/Deadlines/Noten)")
-        out = await get_moodle_context_for_message(message)
+        out = append_source(await get_moodle_context_for_message(message), MOODLE_API_SOURCE)
         trace_bus.publish("agent_end", "orchestrator", "Orchestrator fertig", out[:160], status="ok")
         return out
 
@@ -360,6 +391,7 @@ async def run_orchestrator(
     # greift der Moodle-Fallback (nur einfache LLM-Calls, die auch Groq beherrscht) —
     # passend zur Vorgabe „Antworten nur aus Moodle".
     last_exc: Exception | None = None
+    timed_out = False
     for model_name in settings.gemini_model_list:
         try:
             agent = create_orchestrator(
@@ -368,17 +400,36 @@ async def run_orchestrator(
             )
             result = await asyncio.wait_for(
                 agent.ainvoke({"messages": [HumanMessage(content=message)]}),
-                timeout=45,
+                timeout=_ORCHESTRATOR_TIMEOUT,
             )
             out = extract_text_output(result)
             if out:
                 trace_bus.publish("agent_end", "orchestrator", f"Orchestrator fertig ({model_name})", out[:160], status="ok")
                 return out
             last_exc = RuntimeError("leere Antwort")
+        except asyncio.TimeoutError as exc:
+            # WICHTIG: bei Timeout NICHT das Modell wechseln — ein Re-Run würde alle bereits
+            # aufgerufenen Agents erneut ausführen (der „Loop", teuer + langsam). Abbrechen.
+            last_exc = exc
+            timed_out = True
+            logger.warning("Orchestrator-Timeout (%ss) mit '%s' — kein Modellwechsel.", _ORCHESTRATOR_TIMEOUT, model_name)
+            break
         except Exception as exc:
             last_exc = exc
             logger.warning("Gemini-Modell '%s' im Orchestrator fehlgeschlagen: %s", model_name, exc)
-            continue
+            # NUR bei Quota-Fehlern (429, fail-fast — es wurde noch nichts ausgeführt) das
+            # nächste Modell probieren. Bei allem anderen (Recursion, Tool-Fehler …) KEIN
+            # Re-Run, sonst laufen alle bereits aufgerufenen Agents erneut.
+            if _is_quota_error(exc):
+                continue
+            break
+
+    if timed_out:
+        trace_bus.publish("error", "orchestrator", "Zeitüberschreitung", f"> {_ORCHESTRATOR_TIMEOUT}s", status="error")
+        return (
+            "Deine Anfrage ist recht umfangreich (mehrere Agents) und hat zu lange gedauert. "
+            "Stelle sie bitte etwas gezielter (z.B. nur nach dem Lernfortschritt ODER nur nach Berufsfeldern)."
+        )
 
     # Alle Gemini-Modelle fehlgeschlagen → Moodle-Fallback (Groq-tauglich).
     trace_bus.publish(

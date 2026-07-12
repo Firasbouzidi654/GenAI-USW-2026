@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback
+from app.observability import trace_bus
 from app.models.academic_event import AcademicEvent
 from app.models.calendar_event import CalendarEvent
 from app.models.grade import Grade
@@ -326,6 +327,7 @@ def create_planner_agent(db: AsyncSession, llm=None):
     )
 
 
+@trace_bus.traced_agent("planner", "Planner-Agent")
 async def run_planner_agent(message: str, db: AsyncSession) -> str:
     """Führt den PlannerAgent aus und gibt Lernplan-Empfehlungen zurück."""
     try:

@@ -31,6 +31,9 @@ class PromptRequest(BaseModel):
     chat_id: str | None = Field(default=None, max_length=64)
     user_id: str = Field(default="local", min_length=1, max_length=64)
     moodle_context: dict[str, Any] | None = None
+    # Bei zusammengesetzten Anfragen: deterministische Kurzschluss-Routen überspringen,
+    # damit der LLM-Orchestrator mehrere Agents verkettet (Evaluator + Career + Quiz …).
+    force_llm: bool = False
 
     @field_validator("prompt")
     @classmethod
@@ -119,6 +122,7 @@ async def prompt(body: PromptRequest, db: AsyncSession = Depends(get_db)):
                     body.chat_id,
                     body.user_id,
                     moodle_context=body.moodle_context,
+                    force_llm=body.force_llm,
                 )
             except Exception:
                 trace_bus.publish("error", "output", "Fehler bei der Verarbeitung", "", status="error")

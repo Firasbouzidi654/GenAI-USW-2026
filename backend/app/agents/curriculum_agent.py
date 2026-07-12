@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback
+from app.observability import trace_bus
 from app.models.curriculum import CurriculumModule
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,7 @@ def create_curriculum_agent(db: AsyncSession, llm=None):
     )
 
 
+@trace_bus.traced_agent("curriculum", "Curriculum-Agent")
 async def run_curriculum_agent(message: str, db: AsyncSession) -> str:
     """Führt den CurriculumAgent aus und beantwortet Fragen zum Studienverlauf."""
     try:

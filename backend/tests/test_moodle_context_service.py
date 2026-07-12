@@ -1,6 +1,6 @@
 """Tests for lightweight Moodle context service and Orchestrator usage."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -468,6 +468,10 @@ async def test_moodle_deadline_flow_reuses_short_ttl_cache(monkeypatch):
             },
         ]
 
+    # Dynamisch in der Zukunft — dieser Pfad filtert vergangene Deadlines heraus,
+    # daher darf das Fälligkeitsdatum nicht hartkodiert sein (sonst zeitabhängiger Test).
+    future_due = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
     async def fake_deadlines(course_id):
         calls["deadlines"] += 1
         return {
@@ -475,7 +479,7 @@ async def test_moodle_deadline_flow_reuses_short_ttl_cache(monkeypatch):
             "deadlines": [
                 {
                     "name": f"Deadline {course_id}",
-                    "due_date": "2026-07-05T21:59:00+00:00",
+                    "due_date": future_due,
                 }
             ],
         }

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import extract_text_output, get_llm, run_agent_with_model_fallback, run_with_model_fallback
+from app.observability import trace_bus
 from app.models.grade import Grade
 from app.services.moodle_context_service import get_moodle_grades_context, get_moodle_courses_context
 
@@ -270,6 +271,7 @@ def create_career_agent(db: AsyncSession, llm=None):
 
 # ── Öffentliche API ───────────────────────────────────────────────────────────
 
+@trace_bus.traced_agent("career", "Career-Agent: Analyse")
 async def get_ai_career_analysis(
     courses: list[dict],
     cv_text: str | None = None,
@@ -355,6 +357,7 @@ async def get_ai_career_analysis(
     }
 
 
+@trace_bus.traced_agent("career", "Career-Agent")
 async def run_career_agent(message: str, db: AsyncSession) -> str:
     """Führt den CareerAgent für konversationelle Karriereberatung aus."""
     try:

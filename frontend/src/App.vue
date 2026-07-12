@@ -497,6 +497,20 @@
                   <span class="profil-topic-sub">{{ t.correct }}/{{ t.total }} richtig · {{ t.attempts }} Quiz(ze)</span>
                 </div>
 
+                <!-- AUTOMATISCHE Schwächen-Analyse (Evaluator-Agent, startet beim Öffnen) -->
+                <div v-if="profileData.weak_topics.length > 0" class="profil-autoeval">
+                  <div v-if="evaluatorLoading" class="profil-autoeval-loading">
+                    <UiIcon name="brain" fallback="🧠" /> Der Evaluator-Agent analysiert automatisch deine Schwächen…
+                  </div>
+                  <div v-else-if="evaluatorAnalysis" class="profil-autoeval-result">
+                    <div class="profil-autoeval-head">
+                      <span class="profil-autoeval-title"><UiIcon name="brain" fallback="🧠" /> Automatische Schwächen-Analyse</span>
+                      <button @click.stop="fetchKnowledgeGaps" class="evaluator-refresh">↻ Neu</button>
+                    </div>
+                    <div class="profil-autoeval-text markdown" v-html="renderMarkdown(evaluatorAnalysis)"></div>
+                  </div>
+                </div>
+
                 <button
                   v-if="profileData.weak_topics.length > 0"
                   @click.stop="generateWeaknessQuiz"
@@ -1120,13 +1134,24 @@
               </div>
             </div>
 
-            <!-- Im Chat erstelltes Quiz → im Quiz-Tab öffnen -->
+            <!-- Im Chat erstelltes Quiz → im Quiz-Tab öffnen bzw. Ergebnis ansehen -->
             <div
               v-if="msg.role === 'assistant' && msg.meta && msg.meta.quiz && (!loading || i < messages.length - 1)"
               class="chat-quiz-cta"
             >
-              <button class="chat-quiz-btn" @click.stop="openChatQuiz(msg.meta.quiz.id)">
+              <button
+                v-if="!msg.meta.quiz.completed"
+                class="chat-quiz-btn"
+                @click.stop="openChatQuiz(msg.meta.quiz.id)"
+              >
                 <UiIcon name="web-test" fallback="🧠" /> Quiz öffnen ({{ msg.meta.quiz.question_count }} Fragen)
+              </button>
+              <button
+                v-else
+                class="chat-quiz-btn chat-quiz-btn--done"
+                @click.stop="openChatQuizResult(msg.meta.quiz)"
+              >
+                <UiIcon name="check" fallback="✓" /> Quiz erledigt · {{ msg.meta.quiz.result.score }}/{{ msg.meta.quiz.result.total_questions }} — Ergebnis ansehen
               </button>
             </div>
 
@@ -2350,6 +2375,20 @@ export default {
       if (/\b(lernplan|wochenplan|study plan|lernwoche)\b/.test(t)) return true
       return /\b(erstell|generier|mach|plan)\w*/.test(t) && /\b(lernen|lernplan|woche)\b/.test(t)
     },
+    // Erkennt analytische Fragen (Lernstand / Karriere), die der Evaluator/Career-Agent
+    // beantwortet — für zusammengesetzte Anfragen (LLM-Orchestrator verketten).
+    isAnalyticalQuestion(text) {
+      const t = (text || '').toLowerCase()
+      return /(wo stehe ich|lernfortschritt|fortschritt|berufsfeld|welche jobs|welcher job|welche berufe|karriere|meine stärken|meine staerken|wissenslücke|wissensluecke)/.test(t)
+    },
+    // Erkennt die Bitte, ein Quiz zu erstellen (Spiegel der Backend-Logik) —
+    // damit zusammengesetzte Anfragen („Plan UND Quiz") beide Teile ausführen.
+    isQuizRequestText(text) {
+      const t = (text || '').toLowerCase()
+      if (t.includes('teste mich') || t.includes('test me')) return true
+      return t.includes('quiz') &&
+        /(erstell|generier|mach|erzeug|gib|starte|möchte|moechte|will|brauche|bau|create|make|generate)/.test(t)
+    },
     // --- STUDY ADVISOR: keyword list that triggers the planner-aware AI ---
     isPlannerQuestion(text) {
       const keywords = [
@@ -2508,8 +2547,16 @@ export default {
       await this.$nextTick()
       this.scrollToBottom()
 
-      // --- LERNPLAN/WOCHENPLAN: echten Plan im Planner-Tab erstellen + automatisch dahin wechseln ---
+      // Zusammengesetzte Anfrage? (z.B. „Plan UND Quiz") → beide Teile ausführen.
+      const alsoQuiz = this.isQuizRequestText(userPrompt)
+      // Compound mit analytischem Teil (Lernstand/Karriere) → LLM-Orchestrator verketten
+      // lassen (Evaluator + Career + Quiz in EINER Antwort), statt deterministischer Quiz-Route.
+      const forceLlm = this.isAnalyticalQuestion(userPrompt) && (alsoQuiz || this.isStudyPlanRequest(userPrompt))
+      let planPrefix = ''
+
+      // --- LERNPLAN/WOCHENPLAN: echten Plan im Planner-Tab erstellen ---
       if (!usePromptChat && this.isStudyPlanRequest(userPrompt)) {
+        let planOk = false
         try {
           const res = await fetch('/api/planner/study-plan', {
             method: 'POST',
@@ -2526,26 +2573,31 @@ export default {
                 localStorage.setItem('studyPlanDate', this.studyPlanDate)
               } catch { /* localStorage voll */ }
             }
-            this.messages[this.messages.length - 1].content =
-              'Ich habe dir einen 7-Tage-Lernplan erstellt — du findest ihn im **Planner**-Tab. Ich habe dich direkt dorthin weitergeleitet.'
-            this.activePanel = 'planner'
-            this.mainView = 'chat'
-          } else {
-            this.messages[this.messages.length - 1].content =
-              'Der Lernplan konnte gerade nicht erstellt werden. Bitte später erneut versuchen.'
+            planOk = true
           }
-        } catch {
-          this.messages[this.messages.length - 1].content = 'Fehler: Backend nicht erreichbar.'
-        } finally {
+        } catch { /* unten behandelt */ }
+
+        if (!alsoQuiz) {
+          // Nur Plan → Nachricht setzen, in den Planner-Tab wechseln, fertig.
+          this.messages[this.messages.length - 1].content = planOk
+            ? 'Ich habe dir einen 7-Tage-Lernplan erstellt — du findest ihn im **Planner**-Tab. Ich habe dich direkt dorthin weitergeleitet.'
+            : 'Der Lernplan konnte gerade nicht erstellt werden. Bitte später erneut versuchen.'
+          if (planOk) { this.activePanel = 'planner'; this.mainView = 'chat' }
           this.loading = false
           this.saveMessages()
+          return
         }
-        return
+        // Plan + Quiz → Plan-Bestätigung als Präfix, danach fällt es zum Quiz-Flow durch.
+        planPrefix = planOk
+          ? '✅ **Lernplan erstellt** — du findest ihn im **Planner**-Tab.\n\n'
+          : '⚠️ Der Lernplan konnte gerade nicht erstellt werden.\n\n'
+        this.messages[this.messages.length - 1].content = planPrefix
       }
       // --- END LERNPLAN ---
 
       // --- STUDY ADVISOR: route planner-related questions to the Study Advisor ---
-      if (!usePromptChat && this.isPlannerQuestion(userPrompt)) {
+      // (Aber nicht, wenn zusätzlich ein Quiz gewünscht ist → das läuft über /api/prompt.)
+      if (!usePromptChat && !alsoQuiz && this.isPlannerQuestion(userPrompt)) {
         try {
           const res = await fetch('/api/ai/study-advisor', {
             method: 'POST',
@@ -2575,8 +2627,9 @@ export default {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            prompt: userPrompt,
+            prompt: userPrompt + (planPrefix ? '\n\n[Hinweis: Der Lernplan wurde bereits separat erstellt — überspringe den Lernplan-Teil und rufe ask_planner NICHT auf.]' : ''),
             chat_id: this.chatId,
+            force_llm: forceLlm,
             ...(moodleContext ? { moodle_context: moodleContext } : {}),
           })
         })
@@ -2598,8 +2651,10 @@ export default {
             // Provenance-Meta (verwendete Tools + Quellen) — nicht als Text anhängen
             if (data && typeof data === 'object' && data.meta) {
               this.messages[this.messages.length - 1].meta = data.meta
-              // Im Chat erstelltes Quiz → automatisch zum Quiz-Tab wechseln und öffnen
-              if (data.meta.quiz && data.meta.quiz.id) {
+              // Im Chat erstelltes Quiz → automatisch zum Quiz-Tab wechseln und öffnen.
+              // Bei zusammengesetzter Anfrage (Plan + Quiz) NICHT auto-öffnen, damit man
+              // Plan-Bestätigung + Quiz-Button gemeinsam im Chat sieht.
+              if (data.meta.quiz && data.meta.quiz.id && !planPrefix && !forceLlm) {
                 this.openChatQuiz(data.meta.quiz.id)
               }
               continue
@@ -3124,6 +3179,8 @@ export default {
           this.tutorResults = await res.json()
           this.quizReview = ''
           this.tutorView = 'results'
+          // Ein im Chat erstelltes Quiz als erledigt markieren → kein erneutes Lösen.
+          this.markChatQuizCompleted(this.tutorQuiz.id, this.tutorResults)
         } else {
           const data = await res.json().catch(() => ({}))
           this.tutorStatus = { type: 'error', message: data.detail || 'Fehler beim Auswerten.' }
@@ -3238,6 +3295,12 @@ export default {
         if (res.ok) this.profileData = await res.json()
       } catch { /* silent */ } finally {
         this.profileLoading = false
+      }
+      // AUTOMATISCH: bei erkannten Schwächen den Evaluator-Agent starten (1× pro Session,
+      // gecached). Manuelles Neuladen über „↻ Neu" bleibt möglich.
+      if (this.profileData && this.profileData.weak_topics && this.profileData.weak_topics.length > 0
+          && !this.evaluatorAnalysis && !this.evaluatorLoading) {
+        this.fetchKnowledgeGaps()
       }
     },
     async fetchCurriculumStatus() {
@@ -3384,8 +3447,11 @@ export default {
       this.pdfViewer = null
     },
     async openChatQuiz(quizId) {
-      // Lädt ein im Chat erstelltes Quiz und öffnet es im Quiz-Tab.
+      // Lädt ein im Chat erstelltes Quiz und öffnet es im Quiz-Tab (frischer Versuch).
       if (!quizId) return
+      // Bereits erledigt? → nur das Ergebnis zeigen, kein erneutes Lösen.
+      const doneMsg = this.messages.find(m => m.meta && m.meta.quiz && m.meta.quiz.id === quizId && m.meta.quiz.completed)
+      if (doneMsg) { return this.openChatQuizResult(doneMsg.meta.quiz) }
       try {
         const res = await fetch(`/api/tutor/quiz/${quizId}`)
         if (!res.ok) { this.tutorStatus = { type: 'error', message: 'Quiz konnte nicht geladen werden.' }; return }
@@ -3395,6 +3461,40 @@ export default {
         this.tutorResults = null
         this.quizReview = ''
         this.tutorView = 'quiz'
+        this.activePanel = 'quiz'
+      } catch {
+        this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
+      }
+    },
+    // Markiert ein im Chat erstelltes Quiz nach dem Absolvieren als erledigt (mit Ergebnis).
+    markChatQuizCompleted(quizId, results) {
+      let changed = false
+      for (const m of this.messages) {
+        if (m.meta && m.meta.quiz && m.meta.quiz.id === quizId && !m.meta.quiz.completed) {
+          m.meta.quiz.completed = true
+          m.meta.quiz.result = {
+            score: results.score,
+            total_questions: results.total_questions,
+            percentage: results.percentage,
+          }
+          m.meta.quiz.results = results   // volle Ergebnisse zum Wieder-Anzeigen
+          changed = true
+        }
+      }
+      if (changed) this.saveMessages()
+    },
+    // Öffnet das ERGEBNIS eines bereits erledigten Chat-Quiz (kein neuer Versuch).
+    async openChatQuizResult(quizMeta) {
+      if (!quizMeta || !quizMeta.id) return
+      try {
+        const res = await fetch(`/api/tutor/quiz/${quizMeta.id}`)
+        if (!res.ok) { this.tutorStatus = { type: 'error', message: 'Quiz konnte nicht geladen werden.' }; return }
+        this.tutorQuiz = await res.json()
+        this.tutorAnswers = {}
+        this.tutorCurrentQuestion = 0
+        this.tutorResults = quizMeta.results || null
+        this.quizReview = ''
+        this.tutorView = this.tutorResults ? 'results' : 'quiz'
         this.activePanel = 'quiz'
       } catch {
         this.tutorStatus = { type: 'error', message: 'Backend nicht erreichbar.' }
@@ -3416,6 +3516,12 @@ export default {
 
 <style>
 *, *::before, *::after { box-sizing: border-box; }
+
+/* Projektweiter Verzicht auf sichtbare Rahmen (Wunsch: keine Borders im Frontend).
+   `border-style: none` blendet jeden Rahmen aus und erzwingt Rahmenbreite 0 —
+   border-radius (runde Ecken), box-sizing und border-collapse bleiben unberührt.
+   !important, damit es alle Einzel-Regeln in dieser Datei überschreibt. */
+*, *::before, *::after { border-style: none !important; }
 
 /* CSS VARIABLES */
 :root {
@@ -4411,6 +4517,17 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   border-top: 1px solid var(--border);
 }
 
+/* Automatische Schwächen-Analyse im Profil-Tab */
+.profil-autoeval { margin: 14px 0; }
+.profil-autoeval-loading { font-size: 13px; color: var(--text-muted); padding: 10px 0; }
+.profil-autoeval-result {
+  padding: 14px 16px; border-radius: 10px;
+  background: var(--primary-dim); border: 1px solid var(--primary);
+}
+.profil-autoeval-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.profil-autoeval-title { font-size: 13px; font-weight: 700; color: var(--primary); }
+.profil-autoeval-text { font-size: 14px; line-height: 1.55; color: var(--text); }
+
 /* Automatische Lernanalyse (Evaluator) im Quiz-Ergebnis */
 .quiz-autoeval {
   margin: 14px 0;
@@ -4431,6 +4548,8 @@ img.lsf-sync-icon { filter: brightness(0) invert(1); }
   cursor: pointer;
 }
 .chat-quiz-btn:hover { background: var(--primary-hover); }
+.chat-quiz-btn--done { background: var(--surface-hover); color: var(--text); border: 1px solid var(--border); }
+.chat-quiz-btn--done:hover { background: var(--surface-hover); border-color: var(--primary); }
 
 /* Herkunft/Provenance unter der Antwort */
 .msg-provenance {
@@ -6179,13 +6298,13 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 .cal-month { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
 .cal-weekday { font-size: 12px; font-weight: 700; color: var(--text-muted); text-align: center; padding: 4px 0; }
 .cal-cell {
-  min-height: 118px; border: 1px solid var(--border); border-radius: 9px; padding: 8px;
+  min-height: 118px; border-radius: 9px; padding: 8px;
   cursor: pointer; display: flex; flex-direction: column; gap: 6px; overflow: hidden;
-  background: var(--surface); transition: background 0.12s;
+  background: var(--surface-hover); transition: background 0.12s, box-shadow 0.12s;
 }
-.cal-cell:hover { background: var(--surface-hover); border-color: var(--primary); }
-.cal-cell--out { opacity: 0.4; }
-.cal-cell--today { border-color: var(--primary); }
+.cal-cell:hover { background: var(--primary-dim); }
+.cal-cell--out { opacity: 0.45; }
+.cal-cell--today { background: var(--primary-dim); box-shadow: inset 0 0 0 2px var(--primary); }
 .cal-cell-num { font-size: 13px; font-weight: 700; color: var(--text); align-self: flex-end; }
 .cal-cell--today .cal-cell-num { background: var(--primary); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; }
 .cal-cell-events { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -6215,9 +6334,10 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 
 /* Woche */
 .cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; }
-.cal-week-col { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; min-height: 220px; background: var(--surface); }
-.cal-week-col--today { border-color: var(--primary); }
-.cal-week-head { padding: 8px; text-align: center; cursor: pointer; background: var(--surface-hover); border-bottom: 1px solid var(--border); }
+.cal-week-col { border-radius: 9px; overflow: hidden; min-height: 220px; background: var(--surface-hover); }
+.cal-week-col--today { box-shadow: inset 0 0 0 2px var(--primary); }
+.cal-week-head { padding: 8px; text-align: center; cursor: pointer; background: var(--primary-dim); }
+.cal-week-col--today .cal-week-head { color: var(--primary); }
 .cal-week-dow { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); }
 .cal-week-date { font-size: 15px; font-weight: 700; color: var(--text); }
 .cal-week-events { padding: 8px; display: flex; flex-direction: column; gap: 7px; }
@@ -6228,7 +6348,7 @@ img.tutor-result-icon-img { width: 15px; height: 15px; }
 
 /* Tag */
 .cal-day { display: flex; flex-direction: column; gap: 10px; }
-.cal-day-event { display: flex; gap: 14px; border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.cal-day-event { display: flex; gap: 14px; border-radius: 10px; padding: 12px 14px; background: var(--surface-hover); box-shadow: inset 4px 0 0 var(--primary); }
 .cal-day-time { display: flex; flex-direction: column; font-size: 13px; font-weight: 700; color: var(--primary); min-width: 56px; line-height: 1.35; }
 .cal-day-time-end { color: var(--text-muted); font-weight: 400; }
 .cal-day-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

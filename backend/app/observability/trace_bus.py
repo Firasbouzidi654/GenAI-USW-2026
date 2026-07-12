@@ -8,6 +8,7 @@ Alles läuft im selben Prozess; ohne Abonnenten kostet publish praktisch nichts.
 from __future__ import annotations
 
 import asyncio
+import functools
 import itertools
 import logging
 import time
@@ -77,6 +78,59 @@ def set_quiz(quiz: dict) -> None:
 
 def get_provenance() -> dict | None:
     return current_provenance.get()
+
+
+def traced_agent(node: str, label: str):
+    """Decorator für Agenten-Einstiegsfunktionen: publiziert bei JEDEM Aufruf ein
+    agent_start/agent_end an den Trace-Bus — egal ob der Aufruf aus dem Chat kommt
+    oder direkt aus einem Endpunkt (z.B. „Quiz generieren"-Button).
+
+    Läuft schon ein Trace (z.B. Chat/Orchestrator), wird er weiterverwendet; sonst
+    wird für den Standalone-Aufruf ein eigener Trace gestartet (mit chat_input +
+    abschließendem 'done'), damit er im Agent-Flow-Dashboard als eigener Ablauf erscheint.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            standalone = current_trace_id.get() is None
+            token = set_trace_id(new_trace_id()) if standalone else None
+            # Erste sinnvolle String-Eingabe = die konkrete Anfrage an diesen Agenten.
+            request = next((a for a in args if isinstance(a, str) and a.strip()), "")
+            if standalone:
+                publish("chat_input", "action", label, request[:220])
+            publish("agent_start", node, label, request[:220])
+            ok = True
+            result = None
+            try:
+                result = await fn(*args, **kwargs)
+                return result
+            except Exception as exc:
+                ok = False
+                publish("error", node, f"{label}: Fehler", str(exc)[:200], status="error")
+                raise
+            finally:
+                if ok:
+                    publish("agent_end", node, f"{label} fertig", _result_detail(result), status="ok")
+                if standalone:
+                    if ok:
+                        publish("done", "output", "Fertig", _result_detail(result), status="ok")
+                    reset_trace_id(token)
+        return wrapper
+    return decorator
+
+
+def _result_detail(result) -> str:
+    """Kurzer, lesbarer Ergebnis-Auszug für die Agent-Karte (Text/Dict/…)."""
+    if isinstance(result, str):
+        return result.strip()[:220]
+    if isinstance(result, dict):
+        for key in ("summary", "answer", "plan", "title"):
+            if isinstance(result.get(key), str) and result[key].strip():
+                return result[key].strip()[:220]
+        return f"{len(result)} Felder"
+    if isinstance(result, (list, tuple)):
+        return f"{len(result)} Einträge"
+    return ""
 
 
 def reset_trace_id(token) -> None:

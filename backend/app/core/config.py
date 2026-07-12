@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     job_student_only: bool = True
     # Studiengang der/des Studierenden — fließt in Career-Analyse und Jobsuche ein.
     study_program: str = "Wirtschaftsinformatik"
+    # Aktuelles Fachsemester — für Schwächen-Quizze werden nur Module dieses Semesters genutzt.
+    current_semester: int = 5
     # Observability-Dashboard (nur Präsentation, eigener Port, KEIN Teil der API).
     # Mit OBSERVABILITY_ENABLED=1 starten; läuft dann parallel auf OBSERVABILITY_PORT.
     observability_enabled: bool = False

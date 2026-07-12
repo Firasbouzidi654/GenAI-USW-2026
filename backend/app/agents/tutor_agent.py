@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.observability import trace_bus
+
 from app.agents.base import (
     ainvoke_with_model_fallback,
     extract_text_output,
@@ -653,6 +655,7 @@ def create_tutor_agent(db: AsyncSession, chat_id: str | None = None, user_id: st
 
 # ── Öffentliche API ───────────────────────────────────────────────────────────
 
+@trace_bus.traced_agent("tutor", "Tutor-Agent")
 async def run_tutor_agent(
     message: str,
     db: AsyncSession,
@@ -691,6 +694,7 @@ async def run_tutor_agent(
         return "Der Tutor ist momentan nicht erreichbar. Bitte später erneut versuchen."
 
 
+@trace_bus.traced_agent("tutor", "Tutor-Agent: Quiz generieren")
 async def generate_quiz_with_agent(
     source_documents: list[str],
     num_questions: int,
@@ -833,6 +837,7 @@ hinterlegten Erklärung. Sei konkret und knapp — keine Floskeln.
 """.strip()
 
 
+@trace_bus.traced_agent("tutor", "Tutor: Quiz-Nachbesprechung")
 async def generate_quiz_review(
     quiz_title: str,
     source_documents: list[str],

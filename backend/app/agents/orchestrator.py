@@ -36,9 +36,10 @@ from app.services.moodle_context_service import get_moodle_context_for_message
 logger = logging.getLogger(__name__)
 
 # Zeitlimit für einen kompletten Orchestrator-Lauf (inkl. verketteter Agents).
-# Großzügig, damit Multi-Agent-Ketten (z.B. Evaluator + Career) durchlaufen — bei
-# Überschreitung wird NICHT das Modell gewechselt (siehe run_orchestrator).
-_ORCHESTRATOR_TIMEOUT = 120
+# Großzügig, damit auch 4er-Ketten (z.B. Evaluator + Career + Quiz + Planner) durchlaufen;
+# der Client (/api/prompt via SSE) bricht nicht selbst ab, daher ist ein längeres Limit
+# unkritisch. Bei Überschreitung wird NICHT das Modell gewechselt (siehe run_orchestrator).
+_ORCHESTRATOR_TIMEOUT = 300
 
 # Nur diese (schnell scheiternden) Fehler rechtfertigen einen Modellwechsel — bei ihnen
 # wurde noch nichts ausgeführt. Alles andere würde beim Re-Run alle Agents erneut aufrufen.
@@ -325,7 +326,10 @@ def create_orchestrator(
         from app.services.moodle_qa_service import create_quiz_from_moodle
 
         trace_bus.add_tool("Tutor-Agent (Quiz-Erstellung)")
-        _quiz, text = await create_quiz_from_moodle(topic, 0, db, user_id)  # 0 = Anzahl automatisch
+        # Vollwertiges Quiz (8 Fragen) auch in ZUSAMMENGESETZTEN Anfragen (Evaluator + Career +
+        # Quiz + Plan). Feste Zahl statt Auto (bis 20 Fragen), damit die 4er-Kette im Zeitbudget
+        # bleibt — 8 Fragen passen erfahrungsgemäß gut unter das Orchestrator-Timeout.
+        _quiz, text = await create_quiz_from_moodle(topic, 8, db, user_id)
         return text
 
     llm = llm or get_llm(temperature=0.2)
